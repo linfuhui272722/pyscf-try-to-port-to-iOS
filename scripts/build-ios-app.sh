@@ -246,34 +246,87 @@ PATH="$LDSHIM:$PATH" LD_LIBRARY_PATH="$SWIFTLIBS:${LD_LIBRARY_PATH:-}" \
 # ---------------------------------------------------------------------------
 # 3. Bundle metadata and code signature
 # ---------------------------------------------------------------------------
+# LaunchServices validates a bundle's declared platform and device family when
+# it registers it. A plist without CFBundleSupportedPlatforms, UIDeviceFamily or
+# any icon files is rejected outright, which TrollStore reports as
+# "Failed to add app to icon cache" (exit 181) after signing has already
+# succeeded - so these keys are required, not cosmetic.
+echo ">> generating app icons"
+python3 "$ROOT/scripts/make-app-icon.py" "$PRODUCT" >/dev/null
+
 echo ">> writing Info.plist"
 cat > "$PRODUCT/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleDevelopmentRegion</key><string>en</string>
-	<key>CFBundleExecutable</key><string>$APP_NAME</string>
-	<key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
-	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-	<key>CFBundleName</key><string>PySCF Mobile</string>
-	<key>CFBundleDisplayName</key><string>PySCF</string>
-	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>1.0</string>
-	<key>CFBundleVersion</key><string>1</string>
-	<key>LSRequiresIPhoneOS</key><true/>
-	<key>UILaunchScreen</key><dict/>
-	<key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>MinimumOSVersion</key><string>$DEPLOYMENT_TARGET</string>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>PySCF Mobile</string>
+    <key>CFBundleDisplayName</key><string>PySCF</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleSignature</key><string>????</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+    <key>DTPlatformName</key><string>iphoneos</string>
+    <key>DTSDKName</key><string>iphoneos$DEPLOYMENT_TARGET</string>
+    <key>DTPlatformVersion</key><string>$DEPLOYMENT_TARGET</string>
+    <key>DTCompiler</key><string>com.apple.compilers.llvm.clang.1_0</string>
+    <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+    <key>LSRequiresIPhoneOS</key><true/>
+    <key>UILaunchScreen</key><dict/>
+    <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
+    <key>CFBundleIcons</key>
+    <dict>
+        <key>CFBundlePrimaryIcon</key>
+        <dict>
+            <key>CFBundleIconFiles</key>
+            <array>
+                <string>AppIcon60x60</string>
+                <string>AppIcon40x40</string>
+                <string>AppIcon29x29</string>
+            </array>
+            <key>CFBundleIconName</key><string>AppIcon</string>
+        </dict>
+    </dict>
+    <key>CFBundleIcons~ipad</key>
+    <dict>
+        <key>CFBundlePrimaryIcon</key>
+        <dict>
+            <key>CFBundleIconFiles</key>
+            <array>
+                <string>AppIcon60x60</string>
+                <string>AppIcon76x76</string>
+                <string>AppIcon83.5x83.5</string>
+                <string>AppIcon40x40</string>
+                <string>AppIcon29x29</string>
+            </array>
+        </dict>
+    </dict>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>MinimumOSVersion</key><string>$DEPLOYMENT_TARGET</string>
 </dict>
 </plist>
 PLIST
+
+# Classic four-byte bundle type/signature stamp. LaunchServices tolerates its
+# absence, but every Xcode-built app ships it.
+printf 'APPL????' > "$PRODUCT/PkgInfo"
 
 if [ -x "$ROOT/build/toolchain/bin/ldid" ]; then
   echo ">> ad-hoc signing"

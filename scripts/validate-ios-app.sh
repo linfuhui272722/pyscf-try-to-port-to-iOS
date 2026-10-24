@@ -20,7 +20,7 @@ if [ ! -d "$APP" ]; then
 fi
 
 python3 - "$APP" <<'PY'
-import os, struct, sys
+import os, plistlib, struct, sys
 
 app = sys.argv[1]
 failures = []
@@ -284,6 +284,77 @@ for directory, _, files in os.walk(app):
 
 check(not leaked, "no /workspace/project paths in text payload",
       f"{len(leaked)} file(s)" if leaked else "")
+
+# ---------------------------------------------------------------------------
+# 6. LaunchServices registration prerequisites
+#
+# TrollStore registers the bundle with LaunchServices after signing it. When
+# that call is refused the install fails with exit 181 ("Failed to add app to
+# icon cache"), which reads like a signing problem but is not: the signature is
+# already valid at that point. These are the keys and files LaunchServices
+# needs, so assert them here rather than discovering the failure on a device.
+# ---------------------------------------------------------------------------
+print("launch services registration")
+
+bundle_plist = os.path.join(app, "Info.plist")
+try:
+    with open(bundle_plist, "rb") as handle:
+        bundle_info = plistlib.load(handle)
+except Exception as exc:  # noqa: BLE001 - surfaced via the check below
+    bundle_info = None
+    print(f"  could not read Info.plist: {exc}")
+
+check(isinstance(bundle_info, dict), "bundle Info.plist is readable")
+
+required = {
+    "CFBundleIdentifier": str,
+    "CFBundleExecutable": str,
+    "CFBundleSupportedPlatforms": list,
+    "UIDeviceFamily": list,
+    "CFBundleIcons": dict,
+    "CFBundleVersion": (str, int),
+    "MinimumOSVersion": str,
+}
+missing = []
+for key, kind in required.items():
+    if not isinstance((bundle_info or {}).get(key), kind):
+        missing.append(key)
+check(not missing, "Info.plist carries LaunchServices keys",
+      ", ".join(missing))
+
+platforms = (bundle_info or {}).get("CFBundleSupportedPlatforms") or []
+check(platforms == ["iPhoneOS"], "declares the iPhoneOS platform",
+      repr(platforms))
+
+families = (bundle_info or {}).get("UIDeviceFamily") or []
+check(1 in families, "declares iPhone device family", repr(families))
+
+# Every icon the plist advertises must exist at the size the device expects.
+icon_dir = app
+declared = set()
+for section in ("CFBundleIcons", "CFBundleIcons~ipad"):
+    for key in ((bundle_info or {}).get(section) or {}).get("CFBundlePrimaryIcon", {}).get(
+        "CFBundleIconFiles", []
+    ):
+        declared.add(key)
+
+absent = sorted(
+    name
+    for name in declared
+    if not any(os.path.isfile(os.path.join(icon_dir, f"{name}{sfx}.png"))
+               for sfx in ("", "@2x", "@3x"))
+)
+check(bool(declared) and not absent, "declared icon files are present",
+      f"{len(declared)} declared" if not absent else "missing " + ", ".join(absent))
+
+# A 1024px marketing icon is not needed, but the primary @3x home screen icon is
+# what SpringBoard actually renders; make sure it exists and is non-trivial.
+home = os.path.join(icon_dir, "AppIcon60x60@3x.png")
+check(os.path.isfile(home) and os.path.getsize(home) > 500,
+      "home screen icon has real content",
+      f"{os.path.getsize(home)}B" if os.path.isfile(home) else "absent")
+
+check(os.path.isfile(os.path.join(app, "PkgInfo")), "PkgInfo present")
 
 print("")
 if failures:
