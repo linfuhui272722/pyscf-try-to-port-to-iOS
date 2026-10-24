@@ -1,3 +1,127 @@
+# PySCF on iOS
+
+A port of PySCF to iOS: an embedded quantum-chemistry engine plus a native
+SwiftUI front end. Built entirely from a Linux host — no Mac, no Xcode, no
+Apple-proprietary toolchain.
+
+**Status: beta.** The app builds, links and validates as a real iOS binary, and
+the Python engine passes its test suite. It has **not** been run on a device or
+simulator, because neither is available on the Linux build host. See
+[Limitations](#limitations).
+
+## What this adds
+
+Everything below is additive. The upstream PySCF source tree is untouched.
+
+| Path | What it is |
+|---|---|
+| `ios/PySCF/` | SwiftUI app: molecule builder, results, orbital and density views |
+| `ios/PySCF/Engine/` | `PythonBridge` — boots embedded CPython, speaks JSON-RPC |
+| `ios/native/` | C acceleration extension for the SCF hot paths |
+| `src/pyscf_mobile/` | Mobile engine layer, plus vendored pure-Python shims |
+| `scripts/` | Cross-compilation pipeline and validators |
+| `tests/` | Engine and shim test suites |
+
+## Architecture
+
+```
+SwiftUI views
+     |  AppModel
+     v
+PySCFEngine (Swift)
+     |  JSON-RPC over stdin/stdout
+     v
+PythonBridge (Swift) --boots--> embedded CPython 3.13
+                                    |
+                                    v
+                              PySCF + NumPy + accel ext
+```
+
+The app never links Python statically into Swift. `PythonBridge` starts an
+interpreter inside the app bundle and talks to it over a line-delimited
+JSON-RPC channel, so the Swift side and the chemistry side stay decoupled.
+
+Ten bridge methods are implemented and covered by contract fixtures:
+`capabilities`, `status`, `presets`, `elements`, `geometry`, `scf`, `dft`,
+`mp2`, `ccsd`, `bond_scan`.
+
+## Building
+
+Requirements: a Linux host (x86_64 or aarch64), `curl`, `tar`, `cmake`, a C/C++
+toolchain, and about 8 GB of free disk.
+
+```bash
+scripts/setup-ios-toolchain.sh   # iPhoneOS 15.6 SDK + Darwin cross-toolchain
+scripts/fetch-swift-ios.sh       # Swift 5.6 for Linux (provides ld64.lld)
+scripts/build-numpy-ios.sh       # NumPy for arm64 iOS
+scripts/build-pyscf-ios.sh       # PySCF + libcint + libxc + native ext
+scripts/build-ios-app.sh         # assemble PySCF.app
+```
+
+Each step is incremental and skips work already done. Downloads are pinned to
+specific releases and checksum-verified:
+
+| Artefact | Source | Version |
+|---|---|---|
+| iPhoneOS15.6.sdk | `theos/sdks` | `master-146e41f` |
+| Darwin toolchain | `L1ghtmann/llvm-project` | `test-210562a` |
+| Swift 5.6 | `download.swift.org` | `swift-5.6-RELEASE` |
+
+The result is `build/products/ios-arm64/PySCF.app` — arm64, iOS 15.6 minimum,
+ad-hoc signed.
+
+## Verifying
+
+```bash
+python3 tests/run_tests.py        # engine + shim suites  -> 51/51
+scripts/check-bridge-contract.sh  # Swift <-> Python wire format -> 62/62
+scripts/validate-ios-app.sh       # bundle structure + dependency closure -> 30/30
+```
+
+`validate-ios-app.sh` checks the Mach-O platform and minimum OS version, that
+every `LC_LOAD_DYLIB` resolves inside the bundle, and that no build-host paths
+leaked into the payload.
+
+## How the cross-compilation works
+
+Apple's toolchain cannot run on Linux, so this uses open-source replacements:
+
+* **Compiler** — Clang 11 from the L1ghtmann Darwin cross-toolchain.
+* **Linker** — `ld64.lld` from the Swift 5.6 toolchain. LLD 13 is required: it
+  is the last version that accepts `-platform_version ios`. LLD 17 refuses to
+  link for iOS at all.
+* **SDK** — theos' mirror of the iPhoneOS 15.6 SDK, providing headers, `.tbd`
+  stubs and Swift interfaces.
+
+`install_name_tool` in that toolchain is a no-op — it exits zero without
+modifying anything. Load commands must therefore be correct at link time; a
+binary cannot be fixed up afterwards. This is why the build passes explicit
+`-install_name` and rpath flags rather than post-processing.
+
+`AGENTS.md` records the non-obvious constraints that cost real debugging time.
+
+## Limitations
+
+* **Never executed on iOS.** The build host is Linux; there is no simulator or
+  device. Correctness here means "builds, links, and passes static and
+  host-side checks" — not "runs correctly on a phone".
+* **Not App Store installable.** Ad-hoc signed only. Needs a real signing
+  identity, a provisioning profile, and a device test before that is possible.
+* **The release `.ipa` is unsigned** and is published for inspection. It cannot
+  be installed on a stock device without re-signing.
+* **Reduced feature set.** The mobile engine targets single-molecule SCF/DFT/
+  MP2/CCSD on modest basis sets. PySCF's periodic, relativistic and
+  post-HF machinery is not wired up.
+* **arm64 device only.** No simulator slice is built.
+
+## Reporting issues
+
+This fork is for the iOS port. Upstream PySCF bugs belong at
+[pyscf/pyscf](https://github.com/pyscf/pyscf/issues). Issues with the iOS layer
+are welcome here.
+
+---
+
 <div align="left">
   <img src="https://github.com/pyscf/pyscf-doc/blob/master/logo/pyscf-logo.png" height="80px"/>
 </div>

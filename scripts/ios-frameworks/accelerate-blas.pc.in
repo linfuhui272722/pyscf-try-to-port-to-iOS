@@ -1,0 +1,26 @@
+# pkg-config description of Apple's Accelerate framework, presented as a
+# BLAS/LAPACK provider.
+#
+# Why this shape
+# --------------
+# NumPy's Meson build has a dependency named `accelerate`, but that detector is
+# hard-wired to Meson's SYSTEM method: it checks `platform.mac_ver()` and shells
+# out to `xcrun -sdk macosx`.  Neither exists on a Linux build host, and it also
+# refuses to run for a macOS deployment target below 13.3, so it can never
+# succeed when cross-compiling for iOS.
+#
+# The generic `blas`/`lapack` detectors, by contrast, *do* consult pkg-config and
+# verify the interface by linking (not running) a probe program.  Accelerate
+# provides `dgemm_`, `cblas_dgemm` and `zungqr_` from the iOS SDK, so describing
+# the framework as `blas` and `lapack` is both accurate and sufficient.
+#
+# -F and -framework are clang flags, so Meson passes them through verbatim.
+
+prefix=__SDK__
+libdir=${prefix}
+
+Name: __NAME__
+Description: Apple Accelerate framework (__NAME__) from the iOS SDK
+Version: 15.6
+Cflags:
+Libs: -F${prefix}/System/Library/Frameworks -framework Accelerate

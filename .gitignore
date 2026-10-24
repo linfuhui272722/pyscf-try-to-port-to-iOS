@@ -89,3 +89,16 @@ tmp/
 # mypy
 .mypy_cache/
 
+
+# --- iOS port ---------------------------------------------------------------
+# Everything produced by the iOS build pipeline. Recreate with scripts/
+# (see README.md); several gigabytes, entirely derived.
+build/
+toolchain-dl/
+*.tar.gz
+*.tar.xz
+*.whl
+*.ipa
+
+# setuptools build metadata
+*.egg-info/

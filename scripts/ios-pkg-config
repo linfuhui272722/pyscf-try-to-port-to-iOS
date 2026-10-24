@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""A small, dependency-free pkg-config implementation for the iOS cross build.
+
+Why this exists
+---------------
+Cross-compiling NumPy for iOS requires Meson to resolve Apple's Accelerate
+framework, and Meson does that through ``pkg-config``.  Apple's SDKs do not ship
+``.pc`` files, and the build host may not have pkg-config installed at all, so
+this script provides the subset of the interface Meson actually uses:
+
+    --version, --modversion, --cflags, --libs, --variable=, --print-variables,
+    --list-all, --exists, --atleast-version
+
+It reads real ``.pc`` files from ``PKG_CONFIG_PATH`` (``${prefix}`` and
+``${exec_prefix}`` substitution included) and writes real ``.pc`` files, so the
+``ios-frameworks/*.pc`` shims we ship describe Apple frameworks declaratively
+rather than being hard-coded here.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sys
+from pathlib import Path
+
+_VERSION = "0.29.2"
+
+_VAR_REF = re.compile(r"\$\{([^}]+)\}")
+
+
+def _search_paths() -> list[Path]:
+    paths: list[Path] = []
+    env = os.environ.get("PKG_CONFIG_PATH", "")
+    for entry in env.split(os.pathsep):
+        if entry:
+            paths.append(Path(entry))
+    default = os.environ.get("PKG_CONFIG_LIBDIR", "")
+    for entry in default.split(os.pathsep):
+        if entry:
+            paths.append(Path(entry))
+    return paths
+
+
+def _find_pc(name: str) -> Path | None:
+    for base in _search_paths():
+        candidate = base / f"{name}.pc"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _expand(value: str, variables: dict[str, str], depth: int = 0) -> str:
+    if depth > 16 or "${" not in value:
+        return value
+
+    def repl(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return variables.get(key, "")
+
+    return _expand(_VAR_REF.sub(repl, value), variables, depth + 1)
+
+
+def _parse_pc(path: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Return (variables, fields) with ${} references expanded."""
+    variables: dict[str, str] = {}
+    fields: dict[str, str] = {}
+
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" in line.split("=", 1)[0]:
+            key, _, value = line.partition(":")
+            key = key.strip()
+            if key and " " not in key and not key.startswith("http"):
+                fields[key] = value.strip()
+                continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            variables[key.strip()] = value.strip()
+
+    variables.setdefault("pcfiledir", str(path.parent))
+    variables.setdefault("prefix", str(path.parent))
+    variables.setdefault("exec_prefix", variables["prefix"])
+
+    expanded = {k: _expand(v, variables) for k, v in variables.items()}
+    fields = {k: _expand(v, expanded) for k, v in fields.items()}
+    return expanded, fields
+
+
+def _tokenise(value: str) -> list[str]:
+    return [tok for tok in value.split() if tok]
+
+
+def _collect(name: str, seen: set[str] | None = None) -> tuple[dict[str, str], dict[str, str]] | None:
+    """Load a .pc file and merge its Requires chains."""
+    seen = seen or set()
+    if name in seen:
+        return {}, {}
+    seen.add(name)
+
+    path = _find_pc(name)
+    if path is None:
+        return None
+    variables, fields = _parse_pc(path)
+
+    merged_vars = dict(variables)
+    merged_fields = dict(fields)
+    for key in ("Cflags", "Libs"):
+        merged_fields[key] = fields.get(key, "")
+
+    for dep_spec in _tokenise(fields.get("Requires", "")) + _tokenise(fields.get("Requires.private", "")):
+        dep = dep_spec.split(">=")[0].split("=")[0].strip()
+        if not dep:
+            continue
+        nested = _collect(dep, seen)
+        if nested is None:
+            continue
+        dep_vars, dep_fields = nested
+        for k, v in dep_vars.items():
+            merged_vars.setdefault(k, v)
+        for key in ("Cflags", "Libs"):
+            merged_fields[key] = f"{merged_fields.get(key, '')} {dep_fields.get(key, '')}".strip()
+    return merged_vars, merged_fields
+
+
+def main(argv: list[str]) -> int:
+    args = argv[1:]
+    if not args:
+        print("usage: pkg-config [--modversion|--cflags|--libs|--variable=...] PACKAGE", file=sys.stderr)
+        return 1
+
+    mode = "exists"
+    package_args: list[str] = []
+    static = False
+
+    # Flags Meson may pass that need an explicit answer.
+    for arg in args:
+        if arg == "--version":
+            print(_VERSION)
+            return 0
+        if arg.startswith("--atleast-pkgconfig-version"):
+            return 0
+
+    for arg in args:
+        if arg == "--static":
+            static = True
+        elif arg == "--shared":
+            static = False
+        elif arg in ("--modversion", "--cflags", "--libs", "--print-variables",
+                     "--list-all", "--exists"):
+            mode = arg
+        elif arg.startswith("--variable=") or arg.startswith("--atleast-version="):
+            mode = arg
+        elif arg.startswith("--"):
+            continue  # --print-errors, --silence-errors, --define-prefix, ...
+        else:
+            package_args.append(arg)
+
+    if mode == "--list-all":
+        for base in _search_paths():
+            if not base.is_dir():
+                continue
+            for pc in sorted(base.glob("*.pc")):
+                variables, fields = _parse_pc(pc)
+                print(f"{pc.stem:<24} {fields.get('Description', '')}")
+        return 0
+
+    if not package_args:
+        return 1
+
+    outputs: list[str] = []
+    for package in package_args:
+        collected = _collect(package)
+        if collected is None:
+            return 1
+        variables, fields = collected
+
+        if mode == "--exists":
+            continue
+        if mode == "--modversion":
+            outputs.append(fields.get("Version", ""))
+        elif mode == "--cflags":
+            outputs.append(fields.get("Cflags", ""))
+        elif mode == "--libs":
+            libs = fields.get("Libs", "")
+            if static:
+                libs = f"{libs} {fields.get('Libs.private', '')}".strip()
+            outputs.append(libs)
+        elif mode == "--print-variables":
+            outputs.extend(sorted(variables))
+        elif mode.startswith("--variable="):
+            key = mode.split("=", 1)[1]
+            outputs.append(variables.get(key, fields.get(key, "")))
+        elif mode.startswith("--atleast-version="):
+            wanted = mode.split("=", 1)[1]
+            found = fields.get("Version", "0")
+
+            def parts(text: str) -> list[int]:
+                return [int(p) for p in re.findall(r"\d+", text)] or [0]
+
+            return 0 if parts(found) >= parts(wanted) else 1
+
+    if mode != "--exists":
+        print(" ".join(out for out in outputs if out))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Cross-compile C for arm64 iOS from a Linux host.
+#
+# Drop-in replacement for the `arm64-apple-ios-clang` wrapper that
+# Python-Apple-support expects.  It rewrites the Apple toolchain invocation into
+# one that L1ghtmann's Linux LLVM build understands:
+#
+#   * --target / -isysroot select the iOS SDK,
+#   * -fuse-ld points at the bundled Mach-O linker (ld64.lld), but only when we
+#     are actually linking: build systems such as Meson compile with
+#     -Werror=unused-command-line-argument, and an unused -fuse-ld is fatal,
+#   * any -mios-version-min is dropped so it cannot clash with -target.
+#
+# Layout is discovered relative to this script, so the checkout is relocatable.
+set -euo pipefail
+
+SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT=$(cd "$SELF_DIR/../../.." && pwd)
+
+TC="${IOS_LLVM_TOOLCHAIN:-$ROOT/build/toolchain}"
+SDK="${IOS_SDK_PATH:-$ROOT/build/sdk/iPhoneOS15.6.sdk}"
+DEPLOY="${IOS_DEPLOYMENT_TARGET:-15.6}"
+
+if [[ ! -x "$TC/bin/clang" ]]; then
+  echo "arm64-apple-ios-clang: LLVM toolchain not found at $TC" >&2
+  echo "run scripts/setup-ios-toolchain.sh first" >&2
+  exit 1
+fi
+if [[ ! -d "$SDK" ]]; then
+  echo "arm64-apple-ios-clang: iOS SDK not found at $SDK" >&2
+  echo "run scripts/setup-ios-toolchain.sh first" >&2
+  exit 1
+fi
+
+link_mode=1
+user_args=()
+for arg in "$@"; do
+  case "$arg" in
+    -mios-version-min=*|-miphoneos-version-min=*) continue ;;
+    -c|-E|-S|-M|-MM|-fsyntax-only) link_mode=0 ;;
+  esac
+  user_args+=("$arg")
+done
+
+cmd=("$TC/bin/clang" -target "arm64-apple-ios${DEPLOY}" -isysroot "$SDK")
+if (( link_mode )); then
+  cmd+=("-fuse-ld=$TC/bin/ld")
+fi
+
+exec "${cmd[@]}" "${user_args[@]}"

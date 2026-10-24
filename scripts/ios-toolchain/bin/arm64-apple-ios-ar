@@ -1,0 +1,7 @@
+#!/bin/sh
+# Thin wrapper over llvm-ar, matching Apple's `arm64-apple-ios-ar` name.
+set -eu
+SELF_DIR=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$SELF_DIR/../../.." && pwd)
+TC="${IOS_LLVM_TOOLCHAIN:-$ROOT/build/toolchain}"
+exec "$TC/bin/llvm-ar" "$@"
