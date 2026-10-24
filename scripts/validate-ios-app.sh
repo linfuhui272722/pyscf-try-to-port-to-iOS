@@ -432,6 +432,13 @@ for key, kind in required.items():
 check(not missing, "Info.plist carries LaunchServices keys",
       ", ".join(missing))
 
+# The diagnostics log falls back to the container's Documents directory. That
+# fallback is only useful if the directory is reachable from the Files app, so
+# the sharing keys are required rather than optional.
+sharing = (bundle_info or {}).get("UIFileSharingEnabled")
+check(sharing is True, "exposes Documents in the Files app",
+      repr(sharing))
+
 platforms = (bundle_info or {}).get("CFBundleSupportedPlatforms") or []
 check(platforms == ["iPhoneOS"], "declares the iPhoneOS platform",
       repr(platforms))

@@ -381,6 +381,11 @@ cat > "$PRODUCT/Info.plist" <<PLIST
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>MinimumOSVersion</key><string>$DEPLOYMENT_TARGET</string>
+    <!-- Expose the container's Documents directory in the Files app, so the
+         diagnostics log can be retrieved without a jailbroken-style install.
+         The app writes to /var/mobile when it can and falls back to here. -->
+    <key>UIFileSharingEnabled</key><true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key><true/>
 </dict>
 </plist>
 PLIST
