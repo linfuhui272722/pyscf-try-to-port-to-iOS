@@ -47,6 +47,7 @@ struct RootView: View {
             case .orbitals: OrbitalsScreen()
             case .density: DensityScreen()
             case .table: ElementsView()
+            case .diagnostics: DiagnosticsScreen()
             }
         }
         .navigationTitle(model.screen.rawValue)
@@ -62,6 +63,13 @@ struct RootView: View {
                 .foregroundStyle(caps.engine.available ? Color.green : Color.red)
                 Text("PySCF \(caps.engine.version) · NumPy \(caps.engine.numpyVersion)")
                 Text("protocol v\(caps.protocolVersion) · package \(caps.packageVersion)")
+                if !caps.engine.available {
+                    // Show why, rather than only that it failed. On a device this
+                    // footer is often the only feedback available.
+                    Text(caps.engine.error ?? "no reason reported")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
             } else {
                 Label("Starting engine…", systemImage: "hourglass")
                 Text("Booting embedded CPython")
@@ -72,6 +80,69 @@ struct RootView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(.bar)
+    }
+}
+
+/// Shows the interpreter report and the log file locations.
+///
+/// Reached from the sidebar. The report is collected from inside the embedded
+/// interpreter, which is the only way to see the runtime state on a device: the
+/// iOS extension modules will not load on the build host.
+struct DiagnosticsScreen: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Panel(title: "Log files", systemImage: "doc.text") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if model.logLocations.isEmpty {
+                            Text("No writable log location found.")
+                        } else {
+                            ForEach(model.logLocations, id: \.self) { path in
+                                Text(path)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+
+                Panel(title: "Engine status", systemImage: "stethoscope") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let caps = model.capabilities {
+                            Text("available: \(caps.engine.available ? "yes" : "no")")
+                            if let error = caps.engine.error {
+                                Text(error).foregroundStyle(.red).textSelection(.enabled)
+                            }
+                            if let traceback = caps.engine.traceback {
+                                Text(traceback)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .textSelection(.enabled)
+                            }
+                        } else {
+                            Text("Capabilities not loaded yet.")
+                        }
+                    }
+                }
+
+                Panel(title: "Interpreter report", systemImage: "curlybraces") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button("Collect again") {
+                            Task { await model.captureDiagnostics() }
+                        }
+                        if model.diagnostics.isEmpty {
+                            Text("Not collected. It is written to the log whenever the engine is unavailable.")
+                        } else {
+                            Text(model.diagnostics)
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
     }
 }
 

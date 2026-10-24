@@ -81,6 +81,11 @@ struct PySCFEngine {
         try await run { EngineStatus(try call("status")) }
     }
 
+    /// Fetches the interpreter report described by ``engine.diagnostics``.
+    func diagnostics() async throws -> JSONObject {
+        try await run { try call("diagnostics") }
+    }
+
     func elements() async throws -> [Element] {
         try await run { try call("elements").objects("elements").map(Element.init) }
     }

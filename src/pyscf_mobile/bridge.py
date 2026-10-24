@@ -33,6 +33,7 @@ def capabilities() -> dict:
         "engine": status,
         "methods": [
             "status",
+            "diagnostics",
             "elements",
             "presets",
             "geometry",

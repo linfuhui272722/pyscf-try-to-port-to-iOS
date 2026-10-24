@@ -33,6 +33,7 @@ enum Screen: String, CaseIterable, Identifiable {
     case orbitals = "Orbitals"
     case density = "Density"
     case table = "Elements"
+    case diagnostics = "Diagnostics"
 
     var id: String { rawValue }
 
@@ -43,6 +44,7 @@ enum Screen: String, CaseIterable, Identifiable {
         case .orbitals: return "waveform.path.ecg"
         case .density: return "square.grid.3x3"
         case .table: return "tablecells"
+        case .diagnostics: return "stethoscope"
         }
     }
 }
@@ -75,6 +77,8 @@ final class AppModel: ObservableObject {
     @Published var busyLabel = ""
     @Published var errorMessage: String?
     @Published var logText = ""
+    @Published var diagnostics: String = ""
+    @Published var logLocations: [String] = []
 
     private let engine = PySCFEngine()
     private var didBootstrap = false
@@ -85,21 +89,50 @@ final class AppModel: ObservableObject {
     func bootstrap() async {
         guard !didBootstrap else { return }
         didBootstrap = true
+        DiagnosticsLog.shared.write("app launch, log destinations: "
+            + "\(DiagnosticsLog.shared.writableDestinations())", tag: "app")
         do {
             let caps = try await engine.capabilities()
             capabilities = caps
+            log("engine ready — PySCF \(caps.engine.version), NumPy \(caps.engine.numpyVersion)")
+            if !caps.engine.available {
+                // The engine answered but its native stack is missing. Record the
+                // reason: this is the only view of the failure on a device.
+                let reason = caps.engine.error ?? "no reason reported"
+                log("engine unavailable — \(reason)")
+                DiagnosticsLog.shared.write("engine unavailable — \(reason)", tag: "engine")
+                await captureDiagnostics()
+            }
             if !caps.basisSets.isEmpty {
                 basis = caps.basisSets.contains("sto-3g") ? "sto-3g" : caps.basisSets[0]
             }
             if !caps.functionals.isEmpty {
                 functional = caps.functionals.contains("b3lyp") ? "b3lyp" : caps.functionals[0]
             }
-            log("engine ready — PySCF \(caps.engine.version), NumPy \(caps.engine.numpyVersion)")
             catalog = try await engine.presets()
             elements = try await engine.elements()
             await refreshGeometry()
         } catch {
             report(error)
+            await captureDiagnostics()
+        }
+        logLocations = DiagnosticsLog.shared.writableDestinations()
+    }
+
+    /// Dumps the interpreter report to the log file.
+    ///
+    /// Called whenever the engine looks unhealthy, so the on-device log carries
+    /// the interpreter state rather than only the failure.
+    func captureDiagnostics() async {
+        do {
+            let report = try await engine.diagnostics()
+            let text = report.prettyPrinted()
+            diagnostics = text
+            DiagnosticsLog.shared.writeBlock(text, tag: "diagnostics")
+        } catch {
+            diagnostics = "could not collect diagnostics: "
+                + ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            DiagnosticsLog.shared.write(diagnostics, tag: "diagnostics")
         }
     }
 

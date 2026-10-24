@@ -14,7 +14,10 @@ Swift bridge only ever has to deal with ``Codable`` structs.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
+import os
+import sys
 import time
 import traceback
 from typing import Any, Iterable
@@ -27,12 +30,14 @@ from . import geometry
 # --------------------------------------------------------------------------
 
 _PYSCF_ERROR: str | None = None
+_PYSCF_TRACEBACK: str | None = None
 try:
     import numpy as np
     import pyscf
     from pyscf import cc, dft, gto, mp, scf
 except Exception as exc:
     _PYSCF_ERROR = f"{type(exc).__name__}: {exc}"
+    _PYSCF_TRACEBACK = traceback.format_exc()
     np = None  # type: ignore[assignment]
     pyscf = None  # type: ignore[assignment]
 
@@ -126,10 +131,90 @@ def presets() -> list[dict]:
     ]
 
 
+def diagnostics() -> dict:
+    """Describe the interpreter the engine is actually running in.
+
+    Used on device: the iOS build cannot be reproduced on the host, because the
+    extension modules are arm64-iOS and will not load there, so this reports what
+    the embedded interpreter sees — paths, platform, and a fresh import attempt
+    for each dependency — rather than making the caller guess.
+    """
+    import platform
+    import sysconfig
+
+    report: dict[str, Any] = {
+        "ok": True,
+        "python": sys.version,
+        "platform": sys.platform,
+        "executable": sys.executable,
+        "prefix": sys.prefix,
+        "home": os.environ.get("PYTHONHOME"),
+        "cwd": os.getcwd(),
+        "sysPath": [p for p in sys.path if p],
+        "extSuffix": sysconfig.get_config_var("EXT_SUFFIX"),
+        "soabi": sysconfig.get_config_var("SOABI"),
+        "frozen": getattr(sys, "frozen", False),
+        "pyscfError": _PYSCF_ERROR,
+        "pyscfTraceback": _PYSCF_TRACEBACK,
+    }
+
+    imports: dict[str, Any] = {}
+    for name in ("numpy", "scipy", "h5py", "pyscf", "pyscf.lib", "pyscf_mobile.vendor"):
+        try:
+            module = importlib.import_module(name)
+            imports[name] = {
+                "ok": True,
+                "file": getattr(module, "__file__", None),
+                "version": getattr(module, "__version__", None),
+            }
+        except Exception as exc:
+            imports[name] = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(),
+            }
+    report["imports"] = imports
+
+    # The runtime directories the app staged, and whether they are readable.
+    report["paths"] = {}
+    for label, path in _runtime_paths().items():
+        entry: dict[str, Any] = {"path": path, "exists": os.path.isdir(path)}
+        if entry["exists"]:
+            try:
+                entry["entries"] = sorted(os.listdir(path))[:40]
+            except Exception as exc:
+                entry["error"] = str(exc)
+        report["paths"][label] = entry
+
+    return report
+
+
+def _runtime_paths() -> dict[str, str]:
+    """Locations the packaging script populates, for the diagnostics report."""
+    candidates = {
+        "pythonHome": os.environ.get("PYTHONHOME"),
+    }
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates["enginePackage"] = here
+    candidates["sitePackages"] = os.path.dirname(here)
+    for name in ("numpy", "pyscf", "scipy", "h5py"):
+        try:
+            module = importlib.import_module(name)
+            candidates[name] = os.path.dirname(getattr(module, "__file__", "") or "")
+        except Exception:
+            candidates[name] = os.path.join(candidates["sitePackages"], name)
+    return {k: v for k, v in candidates.items() if v}
+
+
 def engine_status() -> dict:
     """Report whether the native PySCF stack loaded correctly."""
     if pyscf is None:
-        return {"available": False, "error": _PYSCF_ERROR, "version": None}
+        return {
+            "available": False,
+            "error": _PYSCF_ERROR,
+            "traceback": _PYSCF_TRACEBACK,
+            "version": None,
+        }
     libs: dict[str, Any] = {}
     from pyscf import lib as _lib
 
@@ -459,6 +544,8 @@ def dispatch(method: str, params: dict) -> dict:
         }
     if method == "status":
         return {"ok": True, **engine_status()}
+    if method == "diagnostics":
+        return diagnostics()
 
     handlers = {
         "scf": run_scf,

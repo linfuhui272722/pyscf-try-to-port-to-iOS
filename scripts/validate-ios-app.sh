@@ -340,6 +340,73 @@ for directory, _, files in os.walk(app):
 check(not fat_binaries, "no fat binaries in payload",
       ", ".join(sorted(fat_binaries)))
 
+# Every Mach-O image must carry an LC_CODE_SIGNATURE load command. On arm64 iOS
+# the kernel refuses to map an unsigned image, so an unsigned extension module
+# fails at dlopen and surfaces as ImportError for the module inside it - the
+# engine then reports itself unavailable while pure Python still works, which
+# makes the failure look like a missing library rather than a signing problem.
+MACHO_MAGICS = {
+    0xFEEDFACF,  # 64-bit little endian, as built for arm64
+    0xFEEDFACE,  # 32-bit little endian
+    0xCEFAEDFE,  # 64-bit big endian (byte-swapped on disk)
+    0xCFFAEDFE,
+    0xCAFEBABE,
+    0xBEBAFECA,
+    0xCAFEBABF,
+    0xBFBAFECA,
+}
+LC_CODE_SIGNATURE = 0x1D
+
+
+def code_signature_offset(path):
+    """Returns the file offset of LC_CODE_SIGNATURE, or None if absent."""
+    with open(path, "rb") as handle:
+        data = handle.read(1 << 20)
+    if len(data) < 32:
+        return None
+    magic, = _struct.unpack("<I", data[:4])
+    if magic != 0xFEEDFACF:
+        return None
+    ncmds, = _struct.unpack("<I", data[16:20])
+    offset = 32
+    for _ in range(ncmds):
+        if offset + 8 > len(data):
+            return None
+        cmd, cmdsize = _struct.unpack("<II", data[offset:offset + 8])
+        if cmd == LC_CODE_SIGNATURE:
+            return offset
+        if cmdsize == 0:
+            return None
+        offset += cmdsize
+    return None
+
+
+unsigned_images = []
+signed_count = 0
+for directory, _, files in os.walk(app):
+    for name in files:
+        path = os.path.join(directory, name)
+        if os.path.islink(path):
+            continue
+        with open(path, "rb") as handle:
+            head = handle.read(4)
+        if len(head) != 4:
+            continue
+        magic_le, = _struct.unpack("<I", head)
+        magic_be, = _struct.unpack(">I", head)
+        if magic_le not in MACHO_MAGICS and magic_be not in MACHO_MAGICS:
+            continue
+        if magic_le in FAT_MAGICS or magic_be in FAT_MAGICS:
+            continue  # reported above
+        if code_signature_offset(path) is None:
+            unsigned_images.append(os.path.relpath(path, app))
+        else:
+            signed_count += 1
+
+check(signed_count > 0, "bundle carries signed Mach-O images", f"{signed_count} signed")
+check(not unsigned_images, "every Mach-O image is signed",
+      ", ".join(sorted(unsigned_images)[:5]))
+
 # A top-level Resources directory is a macOS bundle convention. MobileInstallation
 # rejects a bundle that contains one during package inspection, which TrollStore
 # surfaces as exit 181 after signing has already succeeded. Resources must sit at

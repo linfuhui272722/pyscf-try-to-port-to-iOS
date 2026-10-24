@@ -392,8 +392,31 @@ printf 'APPL????' > "$PRODUCT/PkgInfo"
 to_binary_plist "$PRODUCT/Info.plist"
 
 if [ -x "$ROOT/build/toolchain/bin/ldid" ]; then
-  echo ">> ad-hoc signing"
-  "$ROOT/build/toolchain/bin/ldid" -S "$EXECUTABLE" || echo "   ldid failed; sign later with codesign/ldid on a device host"
+  # Every Mach-O in the bundle must carry a code signature. On arm64 iOS the
+  # kernel refuses to map an unsigned image, so an unsigned .so fails at dlopen
+  # with "code signature invalid" — which surfaces as an ImportError for the
+  # module inside it. Signing only the main executable is not enough: the
+  # framework and each extension module are loaded separately.
+  #
+  # Ad-hoc signatures do not cover nested content, so the order does not
+  # matter; each image is signed independently.
+  echo ">> ad-hoc signing bundled images"
+  SIGNED=0
+  while IFS= read -r -d '' candidate; do
+    magic="$(head -c 4 "$candidate" | od -An -tx1 | tr -d ' \n')"
+    case "$magic" in
+      cffaedfe|cefaedfe|cafebabe|bebafeca|cafebabf|bfbafeca) ;;
+      *) continue ;;
+    esac
+    if "$ROOT/build/toolchain/bin/ldid" -S "$candidate" 2>/dev/null; then
+      SIGNED=$((SIGNED + 1))
+    else
+      echo "   could not sign $candidate" >&2
+    fi
+  done < <(find "$PRODUCT" -type f -print0)
+  echo "   signed $SIGNED Mach-O images"
+else
+  echo "!! ldid not found; the bundle will not load its native modules on device" >&2
 fi
 
 echo

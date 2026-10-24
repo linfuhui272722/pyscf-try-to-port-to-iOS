@@ -108,6 +108,9 @@ final class PythonBridge: @unchecked Sendable {
     // MARK: - CPython plumbing
 
     private func boot() throws {
+        DiagnosticsLog.shared.write("boot: pythonHome=\(pythonHome?.path ?? "nil")", tag: "bridge")
+        DiagnosticsLog.shared.write("boot: sitePackages=\(sitePackages.map(\.path))", tag: "bridge")
+
         if let home = pythonHome, let cHome = Py_DecodeLocale(home.path, nil) {
             Py_SetPythonHome(cHome)
         }
@@ -115,6 +118,7 @@ final class PythonBridge: @unchecked Sendable {
             Py_Initialize()
         }
         guard Py_IsInitialized() != 0 else {
+            DiagnosticsLog.shared.write("boot: Py_Initialize failed", tag: "bridge")
             throw PythonBridgeError.interpreterUnavailable("Py_Initialize did not report success")
         }
 
@@ -129,21 +133,55 @@ final class PythonBridge: @unchecked Sendable {
         }
         lines.append("sys.argv = ['PySCF']")
         guard PyRun_SimpleString(lines.joined(separator: "\n")) == 0 else {
+            DiagnosticsLog.shared.write("boot: could not configure sys.path", tag: "bridge")
             PyErr_Print()
             throw PythonBridgeError.interpreterUnavailable("could not configure sys.path")
         }
 
         guard let module = PyImport_ImportModule("pyscf_mobile.bridge") else {
-            PyErr_Print()
-            throw PythonBridgeError.missingEntryPoint("pyscf_mobile.bridge")
+            let detail = drainPythonError()
+            DiagnosticsLog.shared.write("boot: cannot import pyscf_mobile.bridge — \(detail)", tag: "bridge")
+            throw PythonBridgeError.missingEntryPoint("pyscf_mobile.bridge (\(detail))")
         }
         defer { Py_DecRef(module) }
 
         guard let fn = PyObject_GetAttrString(module, "handle_json") else {
-            PyErr_Print()
-            throw PythonBridgeError.missingEntryPoint("pyscf_mobile.bridge.handle_json")
+            let detail = drainPythonError()
+            DiagnosticsLog.shared.write("boot: no handle_json — \(detail)", tag: "bridge")
+            throw PythonBridgeError.missingEntryPoint("pyscf_mobile.bridge.handle_json (\(detail))")
         }
         handleJSON = fn
+        DiagnosticsLog.shared.write("boot: interpreter ready", tag: "bridge")
+    }
+
+    /// Fetches and clears the pending Python exception as text.
+    ///
+    /// ``PyErr_Print`` writes to stderr, which is invisible once the app is
+    /// installed on a device, so the message is captured instead. Only function
+    /// calls are used here: the reference-counting macros in ``Python.h`` are
+    /// not importable from Swift. The full traceback for engine failures comes
+    /// from ``pyscf_mobile.engine``, which records it in pure Python.
+    private func drainPythonError() -> String {
+        guard PyErr_Occurred() != nil else { return "no Python error set" }
+        var type: UnsafeMutablePointer<PyObject>?
+        var value: UnsafeMutablePointer<PyObject>?
+        var tb: UnsafeMutablePointer<PyObject>?
+        PyErr_Fetch(&type, &value, &tb)
+        PyErr_NormalizeException(&type, &value, &tb)
+
+        var text = "unknown error"
+        if let value = value, let rendered = PyObject_Str(value), let cString = PyUnicode_AsUTF8(rendered) {
+            text = String(cString: cString)
+            Py_DecRef(rendered)
+        }
+        if let type = type, let rendered = PyObject_Str(type), let cString = PyUnicode_AsUTF8(rendered) {
+            text = "\(String(cString: cString)): \(text)"
+            Py_DecRef(rendered)
+        }
+        if let type = type { Py_DecRef(type) }
+        if let value = value { Py_DecRef(value) }
+        if let tb = tb { Py_DecRef(tb) }
+        return text
     }
 
     private func invoke(_ requestJSON: String) throws -> String {

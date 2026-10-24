@@ -73,6 +73,17 @@ struct JSONObject {
         return dict.compactMapValues { $0 as? Bool }
     }
 
+    /// Renders the whole object as indented JSON, for the diagnostics screen.
+    func prettyPrinted() -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: raw,
+                                                      options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return "\(raw)"
+        }
+        return text
+    }
+
     /// Renders the ``data`` field of an error object as text.
     ///
     /// The engine sends a string for simple failures and an object carrying a
@@ -150,6 +161,7 @@ enum RPCResponse {
 struct EngineStatus {
     var available: Bool
     var error: String?
+    var traceback: String?
     var version: String
     var numpyVersion: String
     var libraries: [String: Bool]
@@ -157,6 +169,7 @@ struct EngineStatus {
     init(_ json: JSONObject) {
         available = json.value("available") as Bool? ?? false
         error = json.value("error") as String?
+        traceback = json.value("traceback") as String?
         version = json.value("version") as String? ?? "unknown"
         numpyVersion = json.value("numpy") as String? ?? "unknown"
         libraries = json.boolMap("libraries")
