@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
-"""Build probe bundles that isolate which property of Resources breaks install.
+"""Test whether the top-level directory name `Resources` is what breaks install.
 
-The first probe round settled the payload question:
+Every probe so far lines up without exception:
 
-  probe-d  executable, icons, plist only          installed
-  probe-b  executable plus Frameworks/            installed
-  probe-c  executable plus Resources/             failed
-  probe-a  the whole app, fresh identifier        failed
-  probe-e  whole app, control executable          failed
+  probe-b/d  no Resources/          installed
+  probe-c/a/e/f/g/h/i  Resources/   failed
 
-So the nested Python framework is clean, and the fault needs Resources/ present.
-Everything about Resources/ correlates with the failure, so these probes vary one
-property at a time on top of probe-b, which is known to install:
+Size, symlinks, Mach-O content and file count are all ruled out by f/g/h/i, each
+of which added exactly one of those to a bundle that installs. What is left is
+the directory name itself: a top-level `Resources` folder is a macOS bundle
+convention, and iOS apps normally keep resources at the top level of the .app.
 
-  probe-f  one 70 MiB file, stored uncompressed  -> bundle size
-  probe-g  a relative symlink inside the bundle  -> symlinks
-  probe-h  one real Mach-O from the tree         -> Mach-O content
-  probe-i  2000 tiny files                       -> file count
+  probe-j  the whole app with Resources/ renamed to Payload/
+  probe-k  the whole app with Resources/python moved to python/
 
-Each probe is built from probe-b's shape, so a failure is caused by the one thing
-that probe adds. probe-f stores its padding uncompressed: the download stays
-small while the bundle still expands to 70 MiB on the device, which separates
-bundle size from download size.
+probe-j keeps the content byte-identical and changes only the name, so it tests
+the name on its own. probe-k is the candidate fix, and it is the layout the
+Swift bridge already looks for first (Bundle.main.resourceURL/python).
 """
 import os
-import plistlib
 import shutil
 import sys
 
@@ -33,28 +27,11 @@ BASE = os.path.join(ROOT, "build", "products", "ios-arm64")
 FULL = os.path.join(BASE, "PySCF.app")
 OUT = os.path.join(BASE, "probes")
 
-REAL_SO = os.path.join(
-    "Resources", "python", "lib", "python3.13", "lib-dynload",
-    "math.cpython-313-iphoneos.so",
-)
 
-
-def set_bundle_id(app, bundle_id):
-    path = os.path.join(app, "Info.plist")
-    with open(path, "rb") as handle:
-        info = plistlib.load(handle)
-    info["CFBundleIdentifier"] = bundle_id
-    with open(path, "wb") as handle:
-        plistlib.dump(info, handle, fmt=plistlib.FMT_BINARY)
-
-
-def base_app(name, bundle_id):
-    """The app with Frameworks/ kept and Resources/ dropped: known to install."""
+def clone(name):
     target = os.path.join(OUT, name)
     shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(FULL, target, symlinks=True)
-    shutil.rmtree(os.path.join(target, "Resources"))
-    set_bundle_id(target, bundle_id)
     return target
 
 
@@ -65,51 +42,26 @@ def main():
     shutil.rmtree(OUT, ignore_errors=True)
     os.makedirs(OUT)
 
-    # F: one large file, to test whether size alone breaks the install. The
-    # padding is all zeros, so it stores tiny while expanding to the size of the
-    # real Resources tree on the device.
-    probe_f = base_app("PySCFF.app", "dev.pyscf.probe.f")
-    resources = os.path.join(probe_f, "Resources")
-    os.makedirs(resources, exist_ok=True)
-    with open(os.path.join(resources, "pad.bin"), "wb") as handle:
-        handle.truncate(150 * 1024 * 1024)
+    # J: same content, different top-level directory name.
+    probe_j = clone("PySCFJ.app")
+    os.rename(os.path.join(probe_j, "Resources"), os.path.join(probe_j, "Payload"))
 
-    # G: a relative symlink inside the bundle.
-    probe_g = base_app("PySCFG.app", "dev.pyscf.probe.g")
-    links = os.path.join(probe_g, "Resources", "links")
-    os.makedirs(links)
-    with open(os.path.join(links, "target.txt"), "w") as handle:
-        handle.write("payload\n")
-    os.symlink("target.txt", os.path.join(links, "alias.txt"))
+    # K: the Python tree at the top level, which is where the bridge looks first.
+    probe_k = clone("PySCFK.app")
+    os.rename(os.path.join(probe_k, "Resources", "python"),
+              os.path.join(probe_k, "python"))
+    os.rmdir(os.path.join(probe_k, "Resources"))
 
-    # H: one genuine Mach-O from the real tree.
-    probe_h = base_app("PySCFH.app", "dev.pyscf.probe.h")
-    destination = os.path.join(probe_h, REAL_SO)
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
-    shutil.copy2(os.path.join(FULL, REAL_SO), destination)
-
-    # I: many small files.
-    probe_i = base_app("PySCFI.app", "dev.pyscf.probe.i")
-    many = os.path.join(probe_i, "Resources", "many")
-    os.makedirs(many)
-    for index in range(2000):
-        with open(os.path.join(many, f"f{index:04d}.txt"), "w") as handle:
-            handle.write("x\n")
-
-    for name, app in (
-        ("F", probe_f),
-        ("G", probe_g),
-        ("H", probe_h),
-        ("I", probe_i),
-    ):
+    for name, app in (("J", probe_j), ("K", probe_k)):
         files = sum(len(f) for _, _, f in os.walk(app))
         size = sum(
             os.lstat(os.path.join(d, f)).st_size
             for d, _, fs in os.walk(app)
             for f in fs
         )
-        print(f"probe {name}: {os.path.basename(app):12} files={files:5} "
-              f"size={size / 1048576:.1f}MiB")
+        top = sorted(os.listdir(app))
+        print(f"probe {name}: files={files:5} size={size / 1048576:6.1f}MiB")
+        print(f"          top level: {top}")
 
 
 if __name__ == "__main__":
