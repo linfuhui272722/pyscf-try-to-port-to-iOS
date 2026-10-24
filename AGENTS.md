@@ -65,6 +65,22 @@ breakage:
 
 These all cost real debugging time; do not "clean them up".
 
+**Every Mach-O in the bundle must be signed, not just the executable.** On arm64
+iOS the kernel refuses to map an image that carries no code signature, so
+`dlopen` of an unsigned `.so` fails and CPython reports it as `ImportError` for
+the module inside it. The failure looks like a missing or unlinked library, and
+it is not: the file is present, correctly linked, and the right platform. It
+happens because signing only `CFBundleExecutable` leaves the Python framework and
+all ~106 extension modules unsigned. `build-ios-app.sh` now signs every file
+whose magic identifies it as a Mach-O, and `validate-ios-app.sh` fails the build
+if any image lacks `LC_CODE_SIGNATURE` — with a companion check that at least one
+image *is* signed, so the rule cannot pass vacuously.
+
+The symptom that identifies this class of bug: pure Python loads, so the
+JSON-RPC envelope resolves and `protocol v1 · package 0.1.0` renders in the
+footer, while every native import fails. When part of the payload works, the
+problem is in what is missing from it, not in how it is reached.
+
 **Never put a top-level `Resources` directory in the .app.** A `Resources`
 folder is a *macOS* bundle convention, not an iOS one. iOS apps keep resources at
 the top level of the `.app`. MobileInstallation rejects a bundle that contains a
