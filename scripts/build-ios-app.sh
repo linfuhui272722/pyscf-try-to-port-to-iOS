@@ -71,6 +71,23 @@ require() {
   fi
 }
 
+# MobileInstallation inspects a bundle by reading its Info.plist, and Apple's
+# toolchain always emits that file in binary plist form. When inspection fails,
+# the install log prints the file's first bytes - ours showed `<?xm`, i.e. XML
+# text, which is the deviation. Rewrite plists as binary so the bundle matches
+# what an Xcode build produces.
+to_binary_plist() {
+  python3 - "$1" <<'BPLIST'
+import plistlib, sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    data = plistlib.load(handle)
+with open(path, "wb") as handle:
+    plistlib.dump(data, handle, fmt=plistlib.FMT_BINARY)
+BPLIST
+}
+
 require "$SDK" "run scripts/setup-ios-toolchain.sh"
 require "$FRAMEWORK" "run scripts/build-pyscf-ios.sh"
 require "$STDLIB" "run scripts/build-pyscf-ios.sh"
@@ -217,6 +234,11 @@ echo ">> staging CPython framework"
 cp -R "$FRAMEWORK" "$PRODUCT/Frameworks/Python.framework"
 chmod +x "$PRODUCT/Frameworks/Python.framework/Python"
 
+# The framework ships its plist as XML declaring version 0.9 with an external
+# DTD reference, and it is a nested bundle that MobileInstallation also
+# inspects, so normalise it to a binary plist like everything else.
+to_binary_plist "$PRODUCT/Frameworks/Python.framework/Info.plist"
+
 # C headers are dead weight in a shipped bundle: nothing on the device can
 # compile against them, and they add ~270 files for LaunchServices to walk.
 rm -rf "$PRODUCT/Frameworks/Python.framework/Headers"
@@ -336,6 +358,8 @@ PLIST
 # Classic four-byte bundle type/signature stamp. LaunchServices tolerates its
 # absence, but every Xcode-built app ships it.
 printf 'APPL????' > "$PRODUCT/PkgInfo"
+
+to_binary_plist "$PRODUCT/Info.plist"
 
 if [ -x "$ROOT/build/toolchain/bin/ldid" ]; then
   echo ">> ad-hoc signing"

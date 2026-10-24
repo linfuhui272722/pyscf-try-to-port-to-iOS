@@ -306,6 +306,22 @@ except Exception as exc:  # noqa: BLE001 - surfaced via the check below
 
 check(isinstance(bundle_info, dict), "bundle Info.plist is readable")
 
+# Apple's toolchain always emits Info.plist as a binary plist, and
+# MobileInstallation reports the first bytes of the file when it refuses a
+# bundle. An XML plist there is the deviation that fails inspection, so require
+# the binary magic on every plist in the bundle.
+xml_plists = []
+for directory, _, files in os.walk(app):
+    for name in files:
+        if name != "Info.plist":
+            continue
+        path = os.path.join(directory, name)
+        with open(path, "rb") as handle:
+            if handle.read(8) != b"bplist00":
+                xml_plists.append(os.path.relpath(path, app))
+check(not xml_plists, "every Info.plist is binary",
+      ", ".join(sorted(xml_plists)))
+
 required = {
     "CFBundleIdentifier": str,
     "CFBundleExecutable": str,
