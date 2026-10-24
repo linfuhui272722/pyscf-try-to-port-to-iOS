@@ -436,6 +436,69 @@ missing_data = [name for name in runtime_data
 check(not missing_data, "runtime data files are packaged",
       ", ".join(missing_data))
 
+# Localisations.  Two failure modes are silent on device, so both are checked
+# here: a text .strings file (iOS ignores it and falls back to English, which
+# reads as "never translated"), and a key present in one language but not the
+# other (that screen reverts to English on a Chinese device).
+languages = ["en", "zh-Hans"]
+strings_tables = {}
+for language in languages:
+    path = os.path.join(app, f"{language}.lproj", "Localizable.strings")
+    if not os.path.isfile(path):
+        strings_tables[language] = None
+        continue
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    if raw[:8] != b"bplist00":
+        check(False, f"{language}.lproj holds a binary plist",
+              "text .strings is ignored at runtime")
+        strings_tables[language] = None
+        continue
+    try:
+        strings_tables[language] = plistlib.loads(raw)
+    except Exception as error:  # noqa: BLE001 - reported as a check failure
+        check(False, f"{language}.lproj parses", str(error))
+        strings_tables[language] = None
+
+check(all(strings_tables.values()), "both localisations are present and compiled",
+      ", ".join(f"{k}={len(v) if v else 0}" for k, v in strings_tables.items()))
+
+if all(strings_tables.values()):
+    english, chinese = strings_tables["en"], strings_tables["zh-Hans"]
+    untranslated = sorted(set(english) - set(chinese))
+    extra = sorted(set(chinese) - set(english))
+    check(not untranslated, "every key has a Chinese translation",
+          ", ".join(untranslated[:5]))
+    check(not extra, "no Chinese key is missing from English",
+          ", ".join(extra[:5]))
+
+    # A format string whose specifiers disagree with the other language crashes
+    # or misrenders on one device and not the other.
+    import re as _re
+    mismatched = []
+    for key in sorted(set(english) & set(chinese)):
+        if _re.findall(r"%[@dfs]", english[key]) != _re.findall(r"%[@dfs]", chinese[key]):
+            mismatched.append(key)
+    check(not mismatched, "format specifiers agree across languages",
+          ", ".join(mismatched[:5]))
+
+    # Keys the source asks for but neither table defines: NSLocalizedString
+    # returns the key itself, so the UI shows "builder.formula" instead of text.
+    source_keys = set()
+    source_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "ios", "PySCF")
+    for directory, _, files in os.walk(source_root):
+        for name in files:
+            if not name.endswith(".swift"):
+                continue
+            with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                source_keys |= set(_re.findall(r'\bL(?:F)?\("([a-zA-Z0-9._]+)"', handle.read()))
+    source_keys |= {f"screen.{name}" for name in
+                    ("builder", "results", "orbitals", "density", "table", "diagnostics")}
+    undefined = sorted(source_keys - set(english))
+    check(not undefined, "every string the UI asks for is defined",
+          ", ".join(undefined[:5]))
+
 required = {
     "CFBundleIdentifier": str,
     "CFBundleExecutable": str,

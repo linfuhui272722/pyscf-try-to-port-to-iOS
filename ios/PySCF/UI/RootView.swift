@@ -16,7 +16,7 @@ struct RootView: View {
                         model.screen = screen
                     } label: {
                         HStack {
-                            Label(screen.rawValue, systemImage: screen.systemImage)
+                            Label(screen.title, systemImage: screen.systemImage)
                             Spacer()
                             if model.screen == screen {
                                 Image(systemName: "checkmark")
@@ -28,7 +28,7 @@ struct RootView: View {
                 }
             }
             .listStyle(.sidebar)
-            .navigationTitle("PySCF Mobile")
+            .navigationTitle(L("app.title"))
             .safeAreaInset(edge: .bottom) {
                 statusFooter
             }
@@ -50,29 +50,29 @@ struct RootView: View {
             case .diagnostics: DiagnosticsScreen()
             }
         }
-        .navigationTitle(model.screen.rawValue)
+        .navigationTitle(model.screen.title)
     }
 
     private var statusFooter: some View {
         VStack(alignment: .leading, spacing: 3) {
             if let caps = model.capabilities {
                 Label(
-                    caps.engine.available ? "Engine online" : "Engine unavailable",
+                    caps.engine.available ? L("engine.online") : L("engine.unavailable"),
                     systemImage: caps.engine.available ? "checkmark.seal.fill" : "xmark.seal"
                 )
                 .foregroundStyle(caps.engine.available ? Color.green : Color.red)
-                Text("PySCF \(caps.engine.version) · NumPy \(caps.engine.numpyVersion)")
-                Text("protocol v\(caps.protocolVersion) · package \(caps.packageVersion)")
+                Text(LF("engine.versions", caps.engine.version, caps.engine.numpyVersion))
+                Text(LF("engine.protocol", caps.protocolVersion, caps.packageVersion))
                 if !caps.engine.available {
                     // Show why, rather than only that it failed. On a device this
                     // footer is often the only feedback available.
-                    Text(caps.engine.error ?? "no reason reported")
+                    Text(caps.engine.error ?? L("engine.noReason"))
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
                 }
             } else {
-                Label("Starting engine…", systemImage: "hourglass")
-                Text("Booting embedded CPython")
+                Label(L("engine.starting"), systemImage: "hourglass")
+                Text(L("engine.booting"))
             }
         }
         .font(.caption2)
@@ -94,10 +94,10 @@ struct DiagnosticsScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Panel(title: "Log files", systemImage: "doc.text") {
+                Panel(title: L("diag.logFiles"), systemImage: "doc.text") {
                     VStack(alignment: .leading, spacing: 6) {
                         if model.logLocations.isEmpty {
-                            Text("No writable log location found.")
+                            Text(L("diag.noLogLocation"))
                         } else {
                             ForEach(model.logLocations, id: \.self) { path in
                                 Text(path)
@@ -108,10 +108,10 @@ struct DiagnosticsScreen: View {
                     }
                 }
 
-                Panel(title: "Engine status", systemImage: "stethoscope") {
+                Panel(title: L("diag.engineStatus"), systemImage: "stethoscope") {
                     VStack(alignment: .leading, spacing: 6) {
                         if let caps = model.capabilities {
-                            Text("available: \(caps.engine.available ? "yes" : "no")")
+                            Text(LF("diag.available", caps.engine.available ? L("common.yes") : L("common.no")))
                             if let error = caps.engine.error {
                                 Text(error).foregroundStyle(.red).textSelection(.enabled)
                             }
@@ -121,18 +121,18 @@ struct DiagnosticsScreen: View {
                                     .textSelection(.enabled)
                             }
                         } else {
-                            Text("Capabilities not loaded yet.")
+                            Text(L("diag.capsNotLoaded"))
                         }
                     }
                 }
 
-                Panel(title: "Interpreter report", systemImage: "curlybraces") {
+                Panel(title: L("diag.interpreterReport"), systemImage: "curlybraces") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Button("Collect again") {
+                        Button(L("diag.collectAgain")) {
                             Task { await model.captureDiagnostics() }
                         }
                         if model.diagnostics.isEmpty {
-                            Text("Not collected. It is written to the log whenever the engine is unavailable.")
+                            Text(L("diag.notCollected"))
                         } else {
                             Text(model.diagnostics)
                                 .font(.system(.caption2, design: .monospaced))
@@ -154,7 +154,7 @@ struct OrbitalsScreen: View {
         ScrollView {
             VStack(spacing: 16) {
                 if let result = model.result {
-                    Panel(title: "Orbital ladder — \(result.method)", systemImage: "waveform.path.ecg") {
+                    Panel(title: LF("orbitals.ladder", result.method), systemImage: "waveform.path.ecg") {
                         OrbitalEnergyChart(
                             energies: result.orbitalEnergies,
                             occupations: result.occupations,
@@ -162,14 +162,14 @@ struct OrbitalsScreen: View {
                             lumo: result.lumo
                         )
                     }
-                    Panel(title: "Occupations", systemImage: "circle.grid.2x2") {
+                    Panel(title: L("orbitals.occupations"), systemImage: "circle.grid.2x2") {
                         ForEach(Array(result.occupations.enumerated()), id: \.offset) { index, occupation in
                             MetricRow(label: "MO \(index + 1)", value: String(format: "%.3f", occupation))
                         }
                     }
                 } else {
-                    Panel(title: "No orbitals yet", systemImage: "hourglass") {
-                        Text("Run an SCF or DFT calculation to populate the orbital ladder.")
+                    Panel(title: L("orbitals.empty.title"), systemImage: "hourglass") {
+                        Text(L("orbitals.empty.body"))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -178,6 +178,6 @@ struct OrbitalsScreen: View {
             .padding()
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("Orbitals")
+        .navigationTitle(L("screen.orbitals"))
     }
 }

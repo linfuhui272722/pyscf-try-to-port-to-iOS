@@ -48,6 +48,7 @@ fails fast with a message naming the script to run when something is missing.
 ```bash
 python3 tests/run_tests.py          # Python engine + vendored-shim tests
 scripts/check-bridge-contract.sh    # Swift models decode real bridge JSON
+                                    #   (also runs ios/tests/LayoutTests)
 scripts/validate-ios-app.sh         # the built .app is a genuine iOS bundle
 ```
 
@@ -58,6 +59,9 @@ breakage:
 * `run_tests.py` — chemistry correctness and the vendored SciPy/h5py shims.
 * `check-bridge-contract.sh` — a field renamed in Python silently breaks the UI
   at runtime; this turns that into a test failure.
+* `ios/tests/LayoutTests` — the 3D preview's sizing and framing rules. A wrong
+  radius or camera distance still produces a valid scene, so it renders as an
+  empty-looking molecule rather than an error.
 * `validate-ios-app.sh` — architecture, min-OS, dependency closure, and
   accidental host-path leakage in the shipped bundle.
 
@@ -94,6 +98,33 @@ The symptom that identifies this class of bug: pure Python loads, so the
 JSON-RPC envelope resolves and `protocol v1 · package 0.1.0` renders in the
 footer, while every native import fails. When part of the payload works, the
 problem is in what is missing from it, not in how it is reached.
+
+**A `.strings` file in the bundle must be a *binary* plist.** iOS ignores a
+text `.strings` file inside an `.lproj` directory: every `NSLocalizedString`
+lookup falls through to the development language, so the app renders entirely in
+English and looks like the translation was never wired up. Xcode compiles
+`.strings` during a normal build; a hand-assembled bundle has no such step, so
+`build-ios-app.sh` runs `scripts/compile-strings.py` on each `.lproj` and
+`validate-ios-app.sh` fails the build if it finds a text file. The validator also
+requires that both languages define the same keys and that their format
+specifiers agree, since a key missing from one table reverts that one screen to
+English and a `%@`/`%d` mismatch crashes only on the affected language.
+
+**The 3D preview must not size atoms from the molecule's own extent.** Deriving
+the sphere radius from the geometry's bounding radius made the same element
+render at 0.079 Å in water and 0.180 Å in benzene, and water — whose whole extent
+is under 1 Å — came out as specks about 4% of a bond length across. The camera
+was also placed at 6.8× the bounding radius, filling 37% of the viewport. Sizing
+and framing now live in `MoleculeLayout.swift`, which is Foundation only so
+`ios/tests/LayoutTests` can assert them on the build host. SceneKit exists only
+on iOS, and a scene with wrong radii still renders — it just looks empty — so
+nothing on the device reports this class of bug.
+
+**`updateUIView` must not replace the scene.** It runs on every keystroke in the
+atom editor. Assigning a new `SCNScene` resets `pointOfView`, so the molecule
+snapped back to its start orientation while the user was rotating it. The
+renderer updates the node graph in place and only reframes the camera, preserving
+its current orbit direction.
 
 **Never put a top-level `Resources` directory in the .app.** A `Resources`
 folder is a *macOS* bundle convention, not an iOS one. iOS apps keep resources at

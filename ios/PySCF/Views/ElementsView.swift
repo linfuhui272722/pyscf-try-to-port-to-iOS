@@ -36,6 +36,6 @@ struct ElementsView: View {
             }
         }
         .listStyle(.plain)
-        .navigationTitle("Elements")
+        .navigationTitle(L("screen.table"))
     }
 }

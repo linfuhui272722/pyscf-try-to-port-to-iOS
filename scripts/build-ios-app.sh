@@ -313,6 +313,29 @@ PATH="$LDSHIM:$PATH" LD_LIBRARY_PATH="$SWIFTLIBS:${LD_LIBRARY_PATH:-}" \
 # any icon files is rejected outright, which TrollStore reports as
 # "Failed to add app to icon cache" (exit 181) after signing has already
 # succeeded - so these keys are required, not cosmetic.
+# ---------------------------------------------------------------------------
+# 2b. Localisations
+# ---------------------------------------------------------------------------
+# iOS reads localised resources from <bundle>/<lang>.lproj/Localizable.strings,
+# and it only honours a *binary* plist there: a text .strings file is ignored
+# and every lookup falls back to the development language, which looks like the
+# translation was never wired up. Compile each .lproj in place, as Xcode does.
+echo ">> staging localisations"
+for lproj in "$ROOT"/ios/PySCF/Resources/*.lproj; do
+  [ -d "$lproj" ] || continue
+  # The source directory is already named "<lang>.lproj", so the destination is
+  # the bundle name itself rather than that name plus another suffix.
+  bundle="$(basename "$lproj")"
+  mkdir -p "$PRODUCT/$bundle"
+  cp "$lproj"/Localizable.strings "$PRODUCT/$bundle/Localizable.strings"
+  python3 "$ROOT/scripts/compile-strings.py" \
+    "$PRODUCT/$bundle/Localizable.strings"
+done
+if [ ! -d "$PRODUCT/en.lproj" ]; then
+  echo "!! no localisations were staged; the UI will show raw keys" >&2
+  exit 1
+fi
+
 echo ">> generating app icons"
 python3 "$ROOT/scripts/make-app-icon.py" "$PRODUCT" >/dev/null
 
@@ -323,6 +346,8 @@ cat > "$PRODUCT/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>en</string><string>zh-Hans</string></array>
     <key>CFBundleExecutable</key><string>$APP_NAME</string>
     <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>

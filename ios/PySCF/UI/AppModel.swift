@@ -18,10 +18,10 @@ enum CalculationKind: String, CaseIterable, Identifiable {
 
     var blurb: String {
         switch self {
-        case .scf: return "Hartree–Fock mean field"
-        case .dft: return "Kohn–Sham density functional"
-        case .mp2: return "Second-order perturbation theory"
-        case .ccsd: return "Coupled-cluster singles and doubles"
+        case .scf: return L("calc.scf.blurb")
+        case .dft: return L("calc.dft.blurb")
+        case .mp2: return L("calc.mp2.blurb")
+        case .ccsd: return L("calc.ccsd.blurb")
         }
     }
 }
@@ -36,6 +36,9 @@ enum Screen: String, CaseIterable, Identifiable {
     case diagnostics = "Diagnostics"
 
     var id: String { rawValue }
+
+    /// Localised sidebar and navigation title.
+    var title: String { L("screen.\(rawValue.lowercased())") }
 
     var systemImage: String {
         switch self {
@@ -162,7 +165,7 @@ final class AppModel: ObservableObject {
     /// Runs the selected calculation.
     func run() async {
         isBusy = true
-        busyLabel = "Running \(calculation.rawValue)…"
+        busyLabel = LF("busy.running", calculation.rawValue)
         errorMessage = nil
         defer { isBusy = false }
 
@@ -208,7 +211,7 @@ final class AppModel: ObservableObject {
     /// Scans the potential-energy surface along the selected bond.
     func runBondScan() async {
         isBusy = true
-        busyLabel = "Scanning bond \(scanI)–\(scanJ)…"
+        busyLabel = LF("busy.scanning", scanI, scanJ)
         errorMessage = nil
         defer { isBusy = false }
         do {

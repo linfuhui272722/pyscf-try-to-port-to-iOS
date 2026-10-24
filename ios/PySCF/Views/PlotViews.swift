@@ -50,10 +50,10 @@ struct OrbitalEnergyChart: View {
             .frame(height: CGFloat(energies.count) * 16 + 8)
 
             HStack(spacing: 14) {
-                legend(color: .accentColor, text: "occupied")
-                legend(color: .orange, text: "virtual")
+                legend(color: .accentColor, text: L("plot.occupied"))
+                legend(color: .orange, text: L("plot.virtual"))
                 if let homo = homo, let lumo = lumo {
-                    Text("HOMO \(String(format: "%.4f", homo)) · LUMO \(String(format: "%.4f", lumo))")
+                    Text(LF("plot.homoLumo", homo, lumo))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -138,7 +138,7 @@ struct BondScanChart: View {
                         }
                     }
                 } else {
-                    Text("Not enough converged points to plot")
+                    Text(L("plot.notEnoughPoints"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -147,7 +147,7 @@ struct BondScanChart: View {
             .frame(height: 190)
 
             if let r = scan.minimumR, let e = scan.minimumEnergy {
-                Text("Minimum: \(formatLength(r)) at \(formatHartree(e))")
+                Text(LF("plot.minimum", formatLength(r), formatHartree(e)))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -177,7 +177,7 @@ struct GapIndicator: View {
                 Image(systemName: "arrow.up.and.down")
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("HOMO–LUMO gap").font(.caption).foregroundStyle(.secondary)
+                    Text(L("plot.gap")).font(.caption).foregroundStyle(.secondary)
                     Text(formatEnergyDelta(gap)).font(.subheadline.monospacedDigit().bold())
                 }
             }

@@ -18,7 +18,7 @@ struct BuilderView: View {
                 actionPanel
 
                 if let message = model.errorMessage {
-                    Panel(title: "Problem", systemImage: "exclamationmark.triangle") {
+                    Panel(title: L("builder.problem"), systemImage: "exclamationmark.triangle") {
                         Text(message).font(.callout).foregroundStyle(.red)
                     }
                 }
@@ -26,21 +26,21 @@ struct BuilderView: View {
             .padding()
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("Builder")
+        .navigationTitle(L("screen.builder"))
     }
 
     // MARK: - Panels
 
     private var previewPanel: some View {
         Panel(title: model.geometry?.formula.isEmpty == false
-                ? "\(model.geometry!.formula) — 3D preview"
-                : "3D preview",
+                ? LF("builder.preview.titled", model.geometry!.formula)
+                : L("builder.preview.title"),
               systemImage: "cube.transparent") {
             MoleculeView(geometry: model.geometry, elementTable: model.elements)
                 .frame(height: 280)
                 .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .bottomTrailing) {
-                    Text("drag to rotate · pinch to zoom")
+                    Text(L("builder.preview.hint"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(8)
@@ -49,9 +49,9 @@ struct BuilderView: View {
     }
 
     private var presetPanel: some View {
-        Panel(title: "Molecule", systemImage: "atom") {
+        Panel(title: L("builder.molecule"), systemImage: "atom") {
             if model.catalog.presets.isEmpty {
-                Text("Loading presets…").font(.callout).foregroundStyle(.secondary)
+                Text(L("builder.loadingPresets")).font(.callout).foregroundStyle(.secondary)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -79,7 +79,7 @@ struct BuilderView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Atom specification").font(.caption).foregroundStyle(.secondary)
+                Text(L("builder.atomSpec")).font(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $model.atomSpec)
                     .font(.system(.footnote, design: .monospaced))
                     .frame(minHeight: 90)
@@ -89,7 +89,7 @@ struct BuilderView: View {
                     .onChange(of: model.atomSpec) { _ in
                         Task { await model.refreshGeometry() }
                     }
-                Text("One atom per line or separated by “;”: element x y z (ångström).")
+                Text(L("builder.atomSpec.hint"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -99,20 +99,20 @@ struct BuilderView: View {
     @ViewBuilder
     private var geometryPanel: some View {
         if let geometry = model.geometry {
-            Panel(title: "Geometry", systemImage: "ruler") {
-                MetricRow(label: "Formula", value: geometry.formula, emphasised: true)
-                MetricRow(label: "Atoms", value: "\(geometry.atomCount)")
-                MetricRow(label: "Molecular mass", value: String(format: "%.4f u", geometry.mass))
+            Panel(title: L("builder.geometry"), systemImage: "ruler") {
+                MetricRow(label: L("builder.formula"), value: geometry.formula, emphasised: true)
+                MetricRow(label: L("builder.atoms"), value: "\(geometry.atomCount)")
+                MetricRow(label: L("builder.mass"), value: String(format: "%.4f u", geometry.mass))
                 if !geometry.inertia.rotationalConstantsGHz.isEmpty {
                     MetricRow(
-                        label: "Rotational constants",
+                        label: L("builder.rotationalConstants"),
                         value: geometry.inertia.rotationalConstantsGHz
                             .map { String(format: "%.1f", $0) }.joined(separator: " · ") + " GHz"
                     )
                 }
                 if !geometry.bonds.isEmpty {
                     Divider()
-                    Text("Bonds").font(.caption).foregroundStyle(.secondary)
+                    Text(L("builder.bonds")).font(.caption).foregroundStyle(.secondary)
                     ForEach(geometry.bonds) { bond in
                         MetricRow(label: "\(bond.a)\(bond.i + 1) – \(bond.b)\(bond.j + 1)",
                                   value: formatLength(bond.length))
@@ -120,7 +120,7 @@ struct BuilderView: View {
                 }
                 if !geometry.angles.isEmpty {
                     Divider()
-                    Text("Angles").font(.caption).foregroundStyle(.secondary)
+                    Text(L("builder.angles")).font(.caption).foregroundStyle(.secondary)
                     ForEach(geometry.angles) { angle in
                         MetricRow(label: angle.label, value: String(format: "%.2f°", angle.angle))
                     }
@@ -130,8 +130,8 @@ struct BuilderView: View {
     }
 
     private var settingsPanel: some View {
-        Panel(title: "Calculation", systemImage: "slider.horizontal.3") {
-            Picker("Method", selection: $model.calculation) {
+        Panel(title: L("builder.calculation"), systemImage: "slider.horizontal.3") {
+            Picker(L("builder.method"), selection: $model.calculation) {
                 ForEach(CalculationKind.allCases) { kind in
                     Text(kind.rawValue).tag(kind)
                 }
@@ -140,34 +140,34 @@ struct BuilderView: View {
             Text(model.calculation.blurb).font(.caption2).foregroundStyle(.secondary)
 
             if model.calculation == .dft {
-                Picker("Functional", selection: $model.functional) {
+                Picker(L("builder.functional"), selection: $model.functional) {
                     ForEach(model.capabilities?.functionals ?? [model.functional], id: \.self) { name in
                         Text(name).tag(name)
                     }
                 }
             }
 
-            Picker("Basis set", selection: $model.basis) {
+            Picker(L("builder.basis"), selection: $model.basis) {
                 ForEach(model.capabilities?.basisSets ?? [model.basis], id: \.self) { name in
                     Text(name).tag(name)
                 }
             }
 
-            Stepper("Charge: \(model.charge)", value: $model.charge, in: -4...4)
-            Stepper("Spin (2S): \(model.spin)", value: $model.spin, in: 0...4)
+            Stepper(LF("builder.charge", model.charge), value: $model.charge, in: -4...4)
+            Stepper(LF("builder.spin", model.spin), value: $model.spin, in: 0...4)
 
             if model.calculation == .scf || model.calculation == .dft {
-                Toggle("Density cube (for the Density tab)", isOn: $model.wantGrid)
+                Toggle(L("builder.densityCube"), isOn: $model.wantGrid)
             }
         }
     }
 
     private var actionPanel: some View {
-        Panel(title: "Run", systemImage: "play.circle") {
+        Panel(title: L("builder.run"), systemImage: "play.circle") {
             Button {
                 Task { await model.run() }
             } label: {
-                Label("Compute \(model.calculation.rawValue)", systemImage: "bolt.fill")
+                Label(LF("builder.compute", model.calculation.rawValue), systemImage: "bolt.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -176,15 +176,15 @@ struct BuilderView: View {
 
             if model.calculation == .scf {
                 Divider()
-                Text("Bond scan").font(.caption).foregroundStyle(.secondary)
+                Text(L("builder.bondScan")).font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Stepper("Atom i: \(model.scanI)", value: $model.scanI, in: 0...max((model.geometry?.atomCount ?? 1) - 1, 0))
-                    Stepper("Atom j: \(model.scanJ)", value: $model.scanJ, in: 0...max((model.geometry?.atomCount ?? 1) - 1, 0))
+                    Stepper(LF("builder.atomI", model.scanI), value: $model.scanI, in: 0...max((model.geometry?.atomCount ?? 1) - 1, 0))
+                    Stepper(LF("builder.atomJ", model.scanJ), value: $model.scanJ, in: 0...max((model.geometry?.atomCount ?? 1) - 1, 0))
                 }
                 Button {
                     Task { await model.runBondScan() }
                 } label: {
-                    Label("Scan \(model.scanI)–\(model.scanJ) bond", systemImage: "chart.xyaxis.line")
+                    Label(LF("builder.scanBond", model.scanI, model.scanJ), systemImage: "chart.xyaxis.line")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)

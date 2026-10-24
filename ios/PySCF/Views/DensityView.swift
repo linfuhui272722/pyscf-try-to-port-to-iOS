@@ -59,7 +59,7 @@ struct DensitySliceView: View {
                     .background(Color.black)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             } else {
-                Text("No density cube available — enable “Density cube” and run a calculation.")
+                Text(L("density.noCube"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 160)
@@ -102,23 +102,23 @@ struct DensityScreen: View {
         ScrollView {
             VStack(spacing: 16) {
                 if let grid = grid, grid.shape.count == 3 {
-                    Panel(title: "Electron density", systemImage: "square.grid.3x3") {
+                    Panel(title: L("density.title"), systemImage: "square.grid.3x3") {
                         DensitySliceView(grid: grid, zIndex: Int(zIndex))
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("z-plane \(Int(zIndex) + 1) of \(grid.shape[2])")
+                            Text(LF("density.plane", Int(zIndex) + 1, grid.shape[2]))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Slider(value: $zIndex, in: 0...Double(max(grid.shape[2] - 1, 1)), step: 1)
                         }
                         Divider()
-                        MetricRow(label: "Cube", value: "\(grid.shape[0]) × \(grid.shape[1]) × \(grid.shape[2])")
-                        MetricRow(label: "Voxels", value: "\(grid.count)")
-                        MetricRow(label: "Peak density", value: String(format: "%.4f", grid.values.max() ?? 0))
-                        MetricRow(label: "Origin", value: grid.origin.map { String(format: "%.2f", $0) }.joined(separator: ", "))
-                        MetricRow(label: "Step", value: grid.step.map { String(format: "%.3f", $0) }.joined(separator: ", "))
+                        MetricRow(label: L("density.cube"), value: "\(grid.shape[0]) × \(grid.shape[1]) × \(grid.shape[2])")
+                        MetricRow(label: L("density.voxels"), value: "\(grid.count)")
+                        MetricRow(label: L("density.peak"), value: String(format: "%.4f", grid.values.max() ?? 0))
+                        MetricRow(label: L("density.origin"), value: grid.origin.map { String(format: "%.2f", $0) }.joined(separator: ", "))
+                        MetricRow(label: L("density.step"), value: grid.step.map { String(format: "%.3f", $0) }.joined(separator: ", "))
                     }
                 } else {
-                    Panel(title: "Electron density", systemImage: "square.grid.3x3") {
+                    Panel(title: L("density.title"), systemImage: "square.grid.3x3") {
                         DensitySliceView(grid: DensityGrid(JSONObject([:])), zIndex: 0)
                     }
                 }
@@ -126,6 +126,6 @@ struct DensityScreen: View {
             .padding()
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("Density")
+        .navigationTitle(L("screen.density"))
     }
 }
