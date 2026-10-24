@@ -53,9 +53,12 @@ final class PythonBridge: @unchecked Sendable {
     private let sitePackages: [URL]
 
     private init() {
-        // On iOS Bundle.main.resourceURL is the .app directory itself, while
-        // the packaging script stages the runtime under Resources/.  Accept
-        // either so the layout can change without breaking the app.
+        // The runtime is staged at the top level of the .app. A top-level
+        // `Resources` directory is a macOS bundle convention, and installing a
+        // bundle that uses it fails: MobileInstallation rejects the package
+        // during inspection, before registration. See probe-j and probe-k in
+        // scripts/build-probes.py. Accept the old path too, so bundles built
+        // before the move still launch.
         let bundle = Bundle.main.resourceURL ?? Bundle.main.bundleURL
         let candidates = [
             bundle.appendingPathComponent("python", isDirectory: true),

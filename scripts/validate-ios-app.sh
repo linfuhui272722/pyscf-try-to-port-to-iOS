@@ -130,7 +130,7 @@ if info:
 # 2. Python runtime payload
 # ---------------------------------------------------------------------------
 print("python runtime")
-libdir = os.path.join(app, "Resources/python/lib/python3.13")
+libdir = os.path.join(app, "python/lib/python3.13")
 site = os.path.join(libdir, "site-packages")
 
 for relative in ["os.py", "inspect.py", "importlib/__init__.py",
@@ -339,6 +339,15 @@ for directory, _, files in os.walk(app):
             fat_binaries.append(os.path.relpath(path, app))
 check(not fat_binaries, "no fat binaries in payload",
       ", ".join(sorted(fat_binaries)))
+
+# A top-level Resources directory is a macOS bundle convention. MobileInstallation
+# rejects a bundle that contains one during package inspection, which TrollStore
+# surfaces as exit 181 after signing has already succeeded. Resources must sit at
+# the top level of the .app instead.
+check(not os.path.isdir(os.path.join(app, "Resources")),
+      "no top-level Resources directory")
+check(os.path.isdir(os.path.join(app, "python", "lib", "python3.13")),
+      "python runtime staged at the top level")
 
 required = {
     "CFBundleIdentifier": str,

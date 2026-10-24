@@ -120,7 +120,7 @@ mkdir -p "$PRODUCT/Frameworks"
 #   <home>/lib/python3.13/lib-dynload extension modules
 # which is what Py_SetPythonHome() in PythonBridge.swift points at.
 # ---------------------------------------------------------------------------
-PYHOME="$PRODUCT/Resources/python"
+PYHOME="$PRODUCT/python"
 mkdir -p "$PYHOME/lib"
 
 echo ">> staging CPython standard library"
