@@ -79,6 +79,19 @@ appears. This cost four releases' worth of wrong fixes (plist formats, Mach-O
 headers, fat binaries) before a probe that renamed the directory found it. When
 an install fails, bisect the bundle before theorising about its contents.
 
+**The JSON-RPC envelope is nested.** The Python bridge returns
+`{"jsonrpc": "2.0", "id": N, "result": {...}}`, and `RPCResponse.decode` unwraps
+the `result` level. Models read the payload's own fields, so they must be handed
+the inner object. If a view shows placeholder values everywhere at once
+("Engine unavailable", "unknown", `v0`, `0.0.0`, an empty basis menu), suspect a
+missing unwrap rather than a broken interpreter: every field falling back to its
+default is the signature.
+
+The contract test in `ios/tests/BridgeContract` must decode through
+`RPCResponse.decode`, never by reaching into `"result"` itself. The earlier
+version did that by hand, which duplicated the very step the app got wrong and
+hid the bug on device.
+
 **Cross-compiling from Linux.** Apple's toolchain cannot run on Linux, so the
 build uses the Darwin cross-toolchain from `L1ghtmann/llvm-project` (clang,
 `ld`, `install_name_tool`) plus `ld64.lld`. LLD 13, shipped in the Swift 5.6
