@@ -234,6 +234,36 @@ echo ">> staging CPython framework"
 cp -R "$FRAMEWORK" "$PRODUCT/Frameworks/Python.framework"
 chmod +x "$PRODUCT/Frameworks/Python.framework/Python"
 
+# Apple's bundles use a fixed mode convention: directories 0755, regular files
+# 0644, executables 0755. This build inherited 2755 (setgid) on directories and
+# 0777 on three shared objects from the staging tree, which no shipped app has.
+# Normalise so the payload matches what MobileInstallation expects to extract.
+echo ">> normalising file modes"
+find "$PRODUCT" -type d -exec chmod 755 {} +
+find "$PRODUCT" -type f ! -perm -u+x -exec chmod 644 {} +
+find "$PRODUCT" -type f -perm -u+x -exec chmod 755 {} +
+
+# The xcframework's slice ships its executable as a single-architecture *fat*
+# binary, because that is what `lipo -create` produces from one input. Apple's
+# own bundles never look like this: Xcode runs `lipo -thin` while building, so
+# every executable inside a shipped .app is a thin Mach-O. A fat executable in
+# the payload is enough on its own to make MobileInstallation refuse the bundle,
+# so thin anything fat here.
+LIPO="$ROOT/build/toolchain/bin/llvm-lipo"
+[ -x "$LIPO" ] || LIPO="$(command -v llvm-lipo || true)"
+if [ -n "$LIPO" ]; then
+  echo ">> thinning fat binaries"
+  FAT_BINARIES="$(python3 "$ROOT/scripts/find-fat-binaries.py" "$PRODUCT")"
+  if [ -n "$FAT_BINARIES" ]; then
+    while IFS= read -r binary; do
+      [ -n "$binary" ] || continue
+      "$LIPO" -thin arm64 "$binary" -output "$binary.thin" && mv "$binary.thin" "$binary"
+      chmod 755 "$binary"
+      echo "   thinned ${binary#"$PRODUCT"/}"
+    done <<< "$FAT_BINARIES"
+  fi
+fi
+
 # The framework ships its plist as XML declaring version 0.9 with an external
 # DTD reference, and it is a nested bundle that MobileInstallation also
 # inspects, so normalise it to a binary plist like everything else.

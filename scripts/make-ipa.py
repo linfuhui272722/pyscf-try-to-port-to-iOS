@@ -44,7 +44,11 @@ def build(app_dir, out_path):
                 info.external_attr = (stat.S_IFLNK | 0o777) << 16
                 archive.writestr(info, os.readlink(path))
             else:
-                info.external_attr = (stat.S_IMODE(os.lstat(path).st_mode) & 0o7777) << 16
+                # Mask setgid and world-write bits. The build tree lives on an
+                # idmapped mount where chmod cannot clear them, and no shipped
+                # app carries either.
+                mode = stat.S_IMODE(os.lstat(path).st_mode) & 0o755
+                info.external_attr = mode << 16
                 info.compress_type = zipfile.ZIP_DEFLATED
                 with open(path, "rb") as handle:
                     archive.writestr(info, handle.read())

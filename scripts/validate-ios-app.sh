@@ -322,6 +322,24 @@ for directory, _, files in os.walk(app):
 check(not xml_plists, "every Info.plist is binary",
       ", ".join(sorted(xml_plists)))
 
+# Apple ships thin Mach-O executables: Xcode runs lipo -thin during a build.
+# A fat binary in the payload is a build artifact that no released app has, and
+# MobileInstallation refuses a bundle containing one.
+import struct as _struct
+FAT_MAGICS = {0xCAFEBABE, 0xBEBAFECA, 0xCAFEBABF, 0xBFBAFECA}
+fat_binaries = []
+for directory, _, files in os.walk(app):
+    for name in files:
+        path = os.path.join(directory, name)
+        if os.path.islink(path):
+            continue
+        with open(path, "rb") as handle:
+            head = handle.read(4)
+        if len(head) == 4 and _struct.unpack(">I", head)[0] in FAT_MAGICS:
+            fat_binaries.append(os.path.relpath(path, app))
+check(not fat_binaries, "no fat binaries in payload",
+      ", ".join(sorted(fat_binaries)))
+
 required = {
     "CFBundleIdentifier": str,
     "CFBundleExecutable": str,
