@@ -65,6 +65,20 @@ breakage:
 
 These all cost real debugging time; do not "clean them up".
 
+**Never put a top-level `Resources` directory in the .app.** A `Resources`
+folder is a *macOS* bundle convention, not an iOS one. iOS apps keep resources at
+the top level of the `.app`. MobileInstallation rejects a bundle that contains a
+top-level `Resources` directory during package inspection, before registration,
+and TrollStore reports it as exit 181 *after* signing has already succeeded. So
+the log shows a valid signature and a complete registration dictionary and still
+fails, which makes it look like a plist or Mach-O problem when it is not.
+
+The runtime therefore lives at `<app>/python`, not `<app>/Resources/python`.
+`validate-ios-app.sh` fails the build if a top-level `Resources` directory
+appears. This cost four releases' worth of wrong fixes (plist formats, Mach-O
+headers, fat binaries) before a probe that renamed the directory found it. When
+an install fails, bisect the bundle before theorising about its contents.
+
 **Cross-compiling from Linux.** Apple's toolchain cannot run on Linux, so the
 build uses the Darwin cross-toolchain from `L1ghtmann/llvm-project` (clang,
 `ld`, `install_name_tool`) plus `ld64.lld`. LLD 13, shipped in the Swift 5.6
