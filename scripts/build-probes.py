@@ -1,34 +1,27 @@
 #!/usr/bin/env python3
-"""Build probe bundles that bisect the install failure.
+"""Build probe bundles that isolate which property of Resources breaks install.
 
-PySCF.app fails to install with "Unable to register" (exit 181) while the
-minimal control app installs. The control proves the Info.plist, the signing and
-the toolchain are fine, so the fault is in the payload, which is the only
-remaining difference.
+The first probe round settled the payload question:
 
-Static inspection of the payload has now been exhausted: every Mach-O is a thin
-arm64 iOS binary with a valid signature, the icons are well formed, there are no
-fat binaries, no nested bundles beyond the Python framework, and no odd file
-names. Rather than guess at a fourth layer, this script builds bundles that
-isolate each payload half:
+  probe-d  executable, icons, plist only          installed
+  probe-b  executable plus Frameworks/            installed
+  probe-c  executable plus Resources/             failed
+  probe-a  the whole app, fresh identifier        failed
+  probe-e  whole app, control executable          failed
 
-  probe-a  the whole app, under a fresh bundle identifier
-  probe-b  the same app without the stdlib and engine tree
-  probe-c  the same app without the nested Python framework
-  probe-d  the executable, icons and plist only
-  probe-e  the control executable with both trees left in place
+So the nested Python framework is clean, and the fault needs Resources/ present.
+Everything about Resources/ correlates with the failure, so these probes vary one
+property at a time on top of probe-b, which is known to install:
 
-Every probe keeps a real executable, so failures in b and c together point at
-the executable rather than at either tree. Reading the results:
+  probe-f  one 70 MiB file, stored uncompressed  -> bundle size
+  probe-g  a relative symlink inside the bundle  -> symlinks
+  probe-h  one real Mach-O from the tree         -> Mach-O content
+  probe-i  2000 tiny files                       -> file count
 
-  a installs              -> the old identifier's on-device state was at fault
-  e installs              -> the trees are fine, so the executable is at fault
-  e fails                 -> one of the two trees is at fault
-  b installs, c fails     -> the stdlib and engine tree is at fault
-  c installs, b fails     -> the nested framework is at fault
-  d installs              -> the failure needs one of the two trees present
-
-Each probe gets its own identifier so they can all be installed side by side.
+Each probe is built from probe-b's shape, so a failure is caused by the one thing
+that probe adds. probe-f stores its padding uncompressed: the download stays
+small while the bundle still expands to 70 MiB on the device, which separates
+bundle size from download size.
 """
 import os
 import plistlib
@@ -40,6 +33,11 @@ BASE = os.path.join(ROOT, "build", "products", "ios-arm64")
 FULL = os.path.join(BASE, "PySCF.app")
 OUT = os.path.join(BASE, "probes")
 
+REAL_SO = os.path.join(
+    "Resources", "python", "lib", "python3.13", "lib-dynload",
+    "math.cpython-313-iphoneos.so",
+)
+
 
 def set_bundle_id(app, bundle_id):
     path = os.path.join(app, "Info.plist")
@@ -50,10 +48,13 @@ def set_bundle_id(app, bundle_id):
         plistlib.dump(info, handle, fmt=plistlib.FMT_BINARY)
 
 
-def clone(source, name):
+def base_app(name, bundle_id):
+    """The app with Frameworks/ kept and Resources/ dropped: known to install."""
     target = os.path.join(OUT, name)
     shutil.rmtree(target, ignore_errors=True)
-    shutil.copytree(source, target, symlinks=True)
+    shutil.copytree(FULL, target, symlinks=True)
+    shutil.rmtree(os.path.join(target, "Resources"))
+    set_bundle_id(target, bundle_id)
     return target
 
 
@@ -64,43 +65,42 @@ def main():
     shutil.rmtree(OUT, ignore_errors=True)
     os.makedirs(OUT)
 
-    # A: the whole app under a fresh identifier. The control app was installed
-    # under dev.pyscf.mobile, so the real app may now be colliding with it.
-    probe_a = clone(FULL, "PySCFA.app")
-    set_bundle_id(probe_a, "dev.pyscf.probe.a")
+    # F: one large file, to test whether size alone breaks the install. The
+    # padding is all zeros, so it stores tiny while expanding to the size of the
+    # real Resources tree on the device.
+    probe_f = base_app("PySCFF.app", "dev.pyscf.probe.f")
+    resources = os.path.join(probe_f, "Resources")
+    os.makedirs(resources, exist_ok=True)
+    with open(os.path.join(resources, "pad.bin"), "wb") as handle:
+        handle.truncate(150 * 1024 * 1024)
 
-    # B: everything except the stdlib and engine tree.
-    probe_b = clone(FULL, "PySCFB.app")
-    shutil.rmtree(os.path.join(probe_b, "Resources"))
-    set_bundle_id(probe_b, "dev.pyscf.probe.b")
+    # G: a relative symlink inside the bundle.
+    probe_g = base_app("PySCFG.app", "dev.pyscf.probe.g")
+    links = os.path.join(probe_g, "Resources", "links")
+    os.makedirs(links)
+    with open(os.path.join(links, "target.txt"), "w") as handle:
+        handle.write("payload\n")
+    os.symlink("target.txt", os.path.join(links, "alias.txt"))
 
-    # C: everything except the nested framework.
-    probe_c = clone(FULL, "PySCFC.app")
-    shutil.rmtree(os.path.join(probe_c, "Frameworks"))
-    set_bundle_id(probe_c, "dev.pyscf.probe.c")
+    # H: one genuine Mach-O from the real tree.
+    probe_h = base_app("PySCFH.app", "dev.pyscf.probe.h")
+    destination = os.path.join(probe_h, REAL_SO)
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    shutil.copy2(os.path.join(FULL, REAL_SO), destination)
 
-    # D: the executable, icons and plist only.
-    probe_d = clone(FULL, "PySCFD.app")
-    shutil.rmtree(os.path.join(probe_d, "Resources"))
-    shutil.rmtree(os.path.join(probe_d, "Frameworks"))
-    set_bundle_id(probe_d, "dev.pyscf.probe.d")
-
-    # E: the whole app, but with the small control executable in place of the
-    # real one. If this installs, neither tree is at fault and the real
-    # executable is.
-    probe_e = clone(FULL, "PySCFE.app")
-    control = os.path.join(BASE, "PySCFControl.app", "PySCFControl")
-    if not os.path.isfile(control):
-        sys.exit(f"missing {control}; run scripts/build-control-app.sh first")
-    shutil.copy2(control, os.path.join(probe_e, "PySCF"))
-    set_bundle_id(probe_e, "dev.pyscf.probe.e")
+    # I: many small files.
+    probe_i = base_app("PySCFI.app", "dev.pyscf.probe.i")
+    many = os.path.join(probe_i, "Resources", "many")
+    os.makedirs(many)
+    for index in range(2000):
+        with open(os.path.join(many, f"f{index:04d}.txt"), "w") as handle:
+            handle.write("x\n")
 
     for name, app in (
-        ("A", probe_a),
-        ("B", probe_b),
-        ("C", probe_c),
-        ("D", probe_d),
-        ("E", probe_e),
+        ("F", probe_f),
+        ("G", probe_g),
+        ("H", probe_h),
+        ("I", probe_i),
     ):
         files = sum(len(f) for _, _, f in os.walk(app))
         size = sum(
