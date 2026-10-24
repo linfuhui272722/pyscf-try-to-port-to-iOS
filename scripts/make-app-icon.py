@@ -75,7 +75,6 @@ def render(size: int) -> list[list[tuple[int, int, int]]]:
     """Draw the icon: rounded panel, two crossing orbital ellipses, nucleus."""
     cx = cy = (size - 1) / 2.0
     radius = size / 2.0
-    corner = size * 0.2237  # iOS squircle-ish corner radius
 
     # Ellipse geometry, scaled from the reference 120px design.
     a = size * 0.335
@@ -89,13 +88,6 @@ def render(size: int) -> list[list[tuple[int, int, int]]]:
     for y in range(size):
         row = []
         for x in range(size):
-            # Rounded-rect mask.
-            dx = max(abs(x - cx) - (radius - corner), 0.0)
-            dy = max(abs(y - cy) - (radius - corner), 0.0)
-            if (dx * dx + dy * dy) ** 0.5 > corner:
-                row.append((0, 0, 0))
-                continue
-
             # Subtle vertical gradient so the tile is not flat.
             shade = y / max(size - 1, 1)
             colour = blend(BG, BG_EDGE, shade * 0.55)
@@ -121,7 +113,7 @@ def render(size: int) -> list[list[tuple[int, int, int]]]:
     for y in range(size):
         for x in range(size):
             d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
-            if d <= halo and pixels[y][x] != (0, 0, 0):
+            if d <= halo:
                 if d <= core:
                     pixels[y][x] = WHITE
                 else:

@@ -179,11 +179,17 @@ for directory, _, files in os.walk(root):
 print(f"   reclaimed {saved / 1e6:.1f} MB")
 PY
 
-# Byte-code caches and bundled test suites are dead weight on device.
+# Byte-code caches and bundled test suites are dead weight on device.  The
+# stdlib ships a 36 MB `test` package plus `idlelib`/`tkinter` that no on-device
+# code path can use, and the framework's C headers are useless without a
+# compiler, so strip all of them.
 echo ">> removing caches and test suites"
-find "$ENGINE_DIR" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+find "$PYHOME" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+find "$PYHOME" -name '*.pyc' -delete 2>/dev/null || true
+for junk in test idlelib tkinter turtledemo lib2to3; do
+  rm -rf "$PYHOME/lib/python3.13/$junk"
+done
 find "$ENGINE_DIR" -name 'tests' -type d -prune -exec rm -rf {} + 2>/dev/null || true
-find "$ENGINE_DIR" -name '*.pyc' -delete 2>/dev/null || true
 
 # NumPy's generated __config__.py records the paths of the machine that built
 # it.  That is pure diagnostics, and shipping the build host's layout is both
@@ -210,6 +216,10 @@ PY
 echo ">> staging CPython framework"
 cp -R "$FRAMEWORK" "$PRODUCT/Frameworks/Python.framework"
 chmod +x "$PRODUCT/Frameworks/Python.framework/Python"
+
+# C headers are dead weight in a shipped bundle: nothing on the device can
+# compile against them, and they add ~270 files for LaunchServices to walk.
+rm -rf "$PRODUCT/Frameworks/Python.framework/Headers"
 
 # The framework's modulemap declares `link "Python"`, so Swift autolinking emits
 # -lPython.  ld64 would fall back to Python.framework/Python, but LLD only
@@ -289,7 +299,6 @@ cat > "$PRODUCT/Info.plist" <<PLIST
                 <string>AppIcon40x40</string>
                 <string>AppIcon29x29</string>
             </array>
-            <key>CFBundleIconName</key><string>AppIcon</string>
         </dict>
     </dict>
     <key>CFBundleIcons~ipad</key>

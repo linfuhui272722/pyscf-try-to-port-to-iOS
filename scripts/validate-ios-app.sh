@@ -356,6 +356,19 @@ check(os.path.isfile(home) and os.path.getsize(home) > 500,
 
 check(os.path.isfile(os.path.join(app, "PkgInfo")), "PkgInfo present")
 
+# CFBundleIconName is a promise that the icons live in an Assets.car produced by
+# Apple's actool. A hand-built bundle has no catalog, and iOS then resolves no
+# icon at all and refuses to register the app. Loose CFBundleIconFiles are the
+# correct form here, so fail if the name key reappears without a catalog.
+icon_name = ((bundle_info or {}).get("CFBundleIcons") or {}).get(
+    "CFBundlePrimaryIcon", {}
+).get("CFBundleIconName")
+has_car = os.path.isfile(os.path.join(app, "Assets.car"))
+check(icon_name is None or has_car,
+      "no CFBundleIconName without Assets.car",
+      f"icon name {icon_name!r} but no catalog" if icon_name and not has_car else "")
+
+
 print("")
 if failures:
     print(f"{len(failures)} of {checks} checks FAILED")
