@@ -72,6 +72,25 @@ struct JSONObject {
         guard let dict = raw[key] as? [String: Any] else { return [:] }
         return dict.compactMapValues { $0 as? Bool }
     }
+
+    /// Renders the ``data`` field of an error object as text.
+    ///
+    /// The engine sends a string for simple failures and an object carrying a
+    /// kind or a traceback for richer ones. Both must survive, because the
+    /// traceback is the only clue when the interpreter fails to boot.
+    func detailString() -> String? {
+        if let text = raw["data"] as? String { return text }
+        if let dict = raw["data"] as? [String: Any] {
+            for key in ["traceback", "message", "kind", "error"] {
+                if let text = dict[key] as? String, !text.isEmpty { return text }
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+               let text = String(data: data, encoding: .utf8) {
+                return text
+            }
+        }
+        return nil
+    }
 }
 
 // MARK: - Errors
@@ -101,6 +120,10 @@ enum RPCResponse {
     case failure(RPCError)
 
     /// Decodes the envelope produced by ``bridge.handle_json``.
+    ///
+    /// The engine always nests the payload under ``result``, e.g.
+    /// ``{"jsonrpc": "2.0", "id": 1, "result": {...}}``. Callers read the
+    /// payload's own fields, so unwrap that level here.
     static func decode(_ json: String) throws -> RPCResponse {
         guard let data = json.data(using: .utf8),
               let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -112,10 +135,13 @@ enum RPCResponse {
             throw RPCError.engine(
                 code: error.integer("code") ?? -32603,
                 message: error.value("message") as String? ?? "unknown engine error",
-                detail: error.value("data") as String?
+                detail: error.detailString()
             )
         }
-        return .result(object)
+        guard let result = object.object("result") else {
+            throw RPCError.malformedResponse("response has neither 'result' nor 'error'")
+        }
+        return .result(result)
     }
 }
 

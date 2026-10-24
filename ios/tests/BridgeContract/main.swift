@@ -34,18 +34,28 @@ func rawFixture(_ name: String) -> String? {
 }
 
 /// Decoded ``result`` object for a successful fixture.
+///
+/// Goes through ``RPCResponse.decode`` rather than reaching into the JSON by
+/// hand. The previous version unwrapped ``result`` itself, which is exactly the
+/// step the app got wrong, so the check passed while the app showed empty menus
+/// and "Engine unavailable" on device.
 func fixture(_ name: String) -> JSONObject {
-    guard let raw = rawFixture(name),
-          let data = raw.data(using: .utf8),
-          let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let result = parsed["result"] as? [String: Any]
-    else {
+    guard let raw = rawFixture(name) else {
         print("  FAIL could not load fixture '\(name)'")
         failures += 1
         checks += 1
         return JSONObject([:])
     }
-    return JSONObject(result)
+    do {
+        if case .result(let object) = try RPCResponse.decode(raw) {
+            return object
+        }
+    } catch {
+        print("  FAIL fixture '\(name)' did not decode: \(error)")
+        failures += 1
+        checks += 1
+    }
+    return JSONObject([:])
 }
 
 print("capabilities")
@@ -173,9 +183,35 @@ do {
         _ = try RPCResponse.decode(errorJSON)
         expect(false, "error response should throw")
     } catch let error as RPCError {
-        if case .engine(let code, let message, _) = error {
+        if case .engine(let code, let message, let detail) = error {
             expect(code < 0, "error code is negative (\(code))")
             expect(!message.isEmpty, "error message present (\(message))")
+            // The engine sends `data` as an object with a traceback, so the
+            // detail must survive rather than being dropped by a String cast.
+            expect(detail?.isEmpty == false, "error detail present")
+        } else {
+            expect(false, "unexpected RPCError case")
+        }
+    } catch {
+        expect(false, "unexpected error type")
+    }
+}
+
+print("error detail from a missing field")
+do {
+    // An error whose data is an object, as raised when the interpreter fails to
+    // boot. The detail must reach the caller or the failure is invisible.
+    let json = """
+    {"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"engine unavailable",\
+    "data":{"kind":"unavailable","traceback":"Traceback (most recent call last): ..."}}}
+    """
+    do {
+        _ = try RPCResponse.decode(json)
+        expect(false, "object-data error should throw")
+    } catch let error as RPCError {
+        if case .engine(_, let message, let detail) = error {
+            expect(message == "engine unavailable", "message preserved")
+            expect(detail?.contains("Traceback") == true, "traceback preserved in detail")
         } else {
             expect(false, "unexpected RPCError case")
         }
