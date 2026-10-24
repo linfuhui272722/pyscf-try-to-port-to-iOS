@@ -77,15 +77,30 @@ STAGE="$ROOT/build/pyscf-ios-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
-# Every .py and .dat in the package, minus tests, examples and build leftovers.
+# Every runtime file in the package, minus tests, examples and build leftovers.
 # pyscf/lib/*.py are runtime modules (misc.py, numpy_helper.py, ...), not part
 # of the C build, so they must be kept.
+#
+# This used to be an allowlist of *.py and *.dat, which silently dropped
+# pyscf/gto/basis/bse_meta.json.  pyscf/gto/mole.py opens that file at import
+# time, so the omission did not degrade a feature: `import pyscf` failed
+# outright, and the engine reported itself unavailable while the rest of the
+# payload was fine.  The CP2K parsers read extensionless data files
+# (GTH_POTENTIALS, POTENTIAL_UZH, BASIS_MOLOPT*, HFX_BASIS) in the same way, so
+# a list of "data-looking" extensions will always be incomplete.  Copy
+# everything and name the things to leave out instead, so a new data file in a
+# future PySCF release ships by default rather than being silently lost.
+DATA_EXCLUDES=(
+  -name '*.c' -o -name '*.h' -o -name '*.f90' -o -name '*.F' -o -name '*.pyi'
+  -o -name '*.cl' -o -name '*.in' -o -name '*.patch' -o -name '*.inc'
+  -o -name 'inc-*' -o -name 'CMakeLists.txt' -o -name 'Makefile'
+)
 ( cd "$SRC" && find pyscf \
     -name '__pycache__' -prune -o \
     -name 'test' -prune -o \
     -name 'tests' -prune -o \
     -name 'examples' -prune -o \
-    -type f \( -name '*.py' -o -name '*.dat' \) -print ) | while read -r f; do
+    -type f ! \( "${DATA_EXCLUDES[@]}" \) -print ) | while read -r f; do
   mkdir -p "$STAGE/$(dirname "$f")"
   cp "$SRC/$f" "$STAGE/$f"
 done

@@ -416,6 +416,26 @@ check(not os.path.isdir(os.path.join(app, "Resources")),
 check(os.path.isdir(os.path.join(app, "python", "lib", "python3.13")),
       "python runtime staged at the top level")
 
+# Data files the Python packages open at runtime, rather than import.
+# pyscf/gto/mole.py opens bse_meta.json while the module is being imported, so
+# a missing copy makes `import pyscf` fail and the engine report itself
+# unavailable.  The packaging step filters the package tree, and an allowlist of
+# extensions there is how this file went missing in the first place: it is the
+# only .json in the tree, and nothing else about it stands out.
+site_packages = os.path.join(app, "python", "lib", "python3.13", "site-packages")
+runtime_data = [
+    "pyscf/gto/basis/bse_meta.json",
+    "pyscf/pbc/gto/pseudo/GTH_POTENTIALS",
+    "pyscf/pbc/gto/pseudo/POTENTIAL_UZH",
+    "pyscf/pbc/gto/basis/BASIS_MOLOPT",
+    "pyscf/pbc/gto/basis/HFX_BASIS",
+    "pyscf/pbc/gto/basis/GTH_BASIS_SETS",
+]
+missing_data = [name for name in runtime_data
+                if not os.path.exists(os.path.join(site_packages, name))]
+check(not missing_data, "runtime data files are packaged",
+      ", ".join(missing_data))
+
 required = {
     "CFBundleIdentifier": str,
     "CFBundleExecutable": str,
