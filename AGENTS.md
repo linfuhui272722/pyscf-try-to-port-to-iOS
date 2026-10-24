@@ -65,6 +65,20 @@ breakage:
 
 These all cost real debugging time; do not "clean them up".
 
+**Never filter the package tree by a list of file extensions.** The staging step
+in `build-pyscf-ios.sh` used to copy `*.py` and `*.dat`, which dropped
+`pyscf/gto/basis/bse_meta.json`. `pyscf/gto/mole.py` opens that file while it is
+being imported, so `import pyscf` raised `FileNotFoundError` and the engine
+reported itself unavailable — while the bridge, NumPy and all 107 signed shared
+libraries loaded fine. The same filter was also silently dropping
+`GTH_POTENTIALS`, `POTENTIAL_UZH`, `BASIS_MOLOPT*`, `HFX_BASIS` and
+`GTH_BASIS_SETS`, which the CP2K parsers open. Data files that are *opened*
+rather than *imported* have no distinguishing extension, and `bse_meta.json` is
+the only `.json` in the tree, so an allowlist will always be incomplete. Copy
+everything and exclude build sources by name. `validate-ios-app.sh` checks that
+the known runtime data files are present, because the build host cannot: the
+source tree always has them, so nothing fails until the app runs on a device.
+
 **Every Mach-O in the bundle must be signed, not just the executable.** On arm64
 iOS the kernel refuses to map an image that carries no code signature, so
 `dlopen` of an unsigned `.so` fails and CPython reports it as `ImportError` for
