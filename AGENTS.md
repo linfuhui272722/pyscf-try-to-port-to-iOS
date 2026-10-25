@@ -362,3 +362,38 @@ be set before the first parallel region. `max_memory` is likewise capped in
 Note that a jetsam (memory) kill and a segfault both leave no crash report.
 Raising the memory ceiling via `ios/PySCF.entitlements` is what distinguishes
 them; the entitlement is embedded on the main executable only.
+
+## Packaging and distribution
+
+The IPA is not committed. `*.ipa` is gitignored and every release attaches it
+to a tag instead: it is 73 MB, and a file that size in the tree would exceed
+GitHub's push limit while making every clone pay for a binary that only the
+device needs.
+
+```
+scripts/build-ios-app.sh                                  # -> build/products/ios-arm64/PySCF.app
+scripts/package-ipa.sh build/products/ios-arm64/PySCF.app build/PySCF-beta-19-unsigned.ipa
+```
+
+`package-ipa.sh` exists because of a symlink trap. The Python payload reaches
+its native libraries through symlinks — `pyscf/lib/libcint.so` points at
+`libcint.6.1.3.so` — and the obvious packaging steps dereference them:
+`shutil.make_archive` does, and `zip` without `-y` does. Dereferencing stores a
+second full copy of each library (29 MB for libcint, 34 MB for libxc) and turns
+a 73 MB archive into a 146 MB one. The script writes the symlink entries
+explicitly, so do not replace it with a one-liner.
+
+Release assets keep the fixed name `PySCF-beta-1.0-unsigned.ipa` regardless of
+version, matching the earlier releases; the tag distinguishes them. `ipa.sha256`
+goes up alongside.
+
+To publish:
+
+```
+GH_TOKEN=<token> python3 - <<'PY'
+...  # POST /repos/{repo}/releases, then POST to uploads.github.com for each asset
+PY
+```
+
+The IPA is unsigned and ad-hoc signed internally, so it needs a sideloading tool
+or a self-signed certificate on the device.
