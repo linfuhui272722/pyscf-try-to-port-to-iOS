@@ -17,6 +17,7 @@
 "builder.functional" = "泛函";
 "builder.geometry" = "几何结构";
 "builder.loadingPresets" = "正在载入预设…";
+"builder.presetsFailed" = "无法载入预设";
 "builder.mass" = "分子质量";
 "builder.method" = "方法";
 "builder.molecule" = "分子";

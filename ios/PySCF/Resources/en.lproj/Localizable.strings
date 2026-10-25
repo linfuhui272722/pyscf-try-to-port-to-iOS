@@ -17,6 +17,7 @@
 "builder.functional" = "Functional";
 "builder.geometry" = "Geometry";
 "builder.loadingPresets" = "Loading presets…";
+"builder.presetsFailed" = "Presets could not be loaded";
 "builder.mass" = "Molecular mass";
 "builder.method" = "Method";
 "builder.molecule" = "Molecule";

@@ -208,6 +208,24 @@ The Python bridge is a serial queue that holds the GIL around every request, so
 `PythonBridge.call` is safe from any actor. `handle_json` never raises — all
 failures come back as JSON-RPC error objects.
 
+**The interpreter must release the GIL after boot.** `Py_Initialize()` leaves the
+GIL held by the calling thread and never releases it. `PySCFEngine.run()`
+dispatches every request onto the global concurrent queue, so the request that
+boots the interpreter succeeds and the next one, running on a different thread,
+blocks forever inside `PyGILState_Ensure`. The visible symptom is a panel stuck
+on "Loading presets…" rather than an error. `PythonBridge.boot` therefore calls
+`PyEval_SaveThread()` immediately after `Py_Initialize()`, and
+`validate-ios-app.sh` asserts the built binary imports `_PyEval_SaveThread`.
+
+`PyEval_SaveThread` is declared in the framework's top-level `ceval.h`, which the
+module map exposes to Swift. The `cpython/ceval.h` exclusion in the module map
+does not hide it.
+
+`check-bridge-contract.sh` runs on the host, so it must build its own ncurses and
+linker aliases. Do not reintroduce a hardcoded `/tmp/swift-toolchain` or
+`/tmp/swift-libs` path: `/tmp` does not survive a container restart, and a missing
+compiler then looks like a test failure rather than a setup gap.
+
 ## Testing notes
 
 `test_shims.py` rewrites `sys.path` to put the vendored shims ahead of the real

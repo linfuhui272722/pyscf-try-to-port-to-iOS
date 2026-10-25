@@ -116,6 +116,13 @@ final class PythonBridge: @unchecked Sendable {
         }
         if Py_IsInitialized() == 0 {
             Py_Initialize()
+            // Py_Initialize leaves the GIL held by the calling thread and never
+            // releases it. Requests are dispatched onto the global concurrent
+            // queue, so the second one can run on a different thread and blocks
+            // forever inside PyGILState_Ensure: the first request succeeds and
+            // every later one hangs. Release the GIL here so each request can
+            // re-acquire it, which is the embedding pattern the C API documents.
+            _ = PyEval_SaveThread()
         }
         guard Py_IsInitialized() != 0 else {
             DiagnosticsLog.shared.write("boot: Py_Initialize failed", tag: "bridge")

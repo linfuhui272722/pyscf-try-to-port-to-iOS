@@ -11,17 +11,19 @@ struct BuilderView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                previewPanel
-                presetPanel
-                geometryPanel
-                settingsPanel
-                actionPanel
-
+                // Shown first: an engine failure is the reason the panels below
+                // stay empty, and at the bottom of a long scroll it is invisible.
                 if let message = model.errorMessage {
                     Panel(title: L("builder.problem"), systemImage: "exclamationmark.triangle") {
                         Text(message).font(.callout).foregroundStyle(.red)
                     }
                 }
+
+                previewPanel
+                presetPanel
+                geometryPanel
+                settingsPanel
+                actionPanel
             }
             .padding()
         }
@@ -51,7 +53,17 @@ struct BuilderView: View {
     private var presetPanel: some View {
         Panel(title: L("builder.molecule"), systemImage: "atom") {
             if model.catalog.presets.isEmpty {
-                Text(L("builder.loadingPresets")).font(.callout).foregroundStyle(.secondary)
+                // Presets only stay empty when the catalog call failed, so say so
+                // instead of showing a spinner that will never resolve.
+                if model.errorMessage == nil {
+                    Text(L("builder.loadingPresets"))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(L("builder.presetsFailed"))
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                }
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {

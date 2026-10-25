@@ -11,7 +11,47 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/build/contract"
-SWIFT="${HOST_SWIFT:-$(command -v swiftc || echo /tmp/swift-toolchain/usr/bin/swiftc)}"
+
+# Prefer the toolchain this repo downloaded, then anything on PATH.  A bare
+# /tmp location is not used: /tmp does not survive a container restart, and a
+# missing compiler then looked like a test failure rather than a setup gap.
+if [ -n "${HOST_SWIFT:-}" ]; then
+  SWIFT="$HOST_SWIFT"
+elif [ -x "$ROOT/build/swift/usr/bin/swiftc" ]; then
+  SWIFT="$ROOT/build/swift/usr/bin/swiftc"
+else
+  SWIFT="$(command -v swiftc || true)"
+fi
+if [ -z "$SWIFT" ] || [ ! -x "$SWIFT" ]; then
+  echo "no Swift compiler found; run scripts/fetch-swift-ios.sh or set HOST_SWIFT" >&2
+  exit 1
+fi
+
+# The Linux Swift toolchain links against ncurses6 and names its linker through
+# the driver, so expose the aliases the loader and driver look for.  Everything
+# is rebuilt here rather than assumed to be present in /tmp.
+SWIFTLIBS="$OUT/swift-libs"
+mkdir -p "$SWIFTLIBS"
+for lib in libncursesw.so.6 libtinfo.so.6; do
+  for candidate in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /usr/lib; do
+    if [ -e "$candidate/$lib" ] && [ ! -e "$SWIFTLIBS/$lib" ]; then
+      ln -s "$candidate/$lib" "$SWIFTLIBS/$lib"
+    fi
+  done
+done
+if [ ! -e "$SWIFTLIBS/libncurses.so.6" ] && [ -e "$SWIFTLIBS/libncursesw.so.6" ]; then
+  ln -s libncursesw.so.6 "$SWIFTLIBS/libncurses.so.6"
+fi
+
+# The Swift driver on Linux asks clang for -fuse-ld=gold, but gold is not
+# installed everywhere and clang rejects the flag outright when it is absent.
+# Expose the system linker under the name the driver requests.
+LDSHIM="$OUT/ldshim"
+mkdir -p "$LDSHIM"
+if ! command -v ld.gold >/dev/null 2>&1 && [ ! -e "$LDSHIM/ld.gold" ]; then
+  ln -s "$(command -v ld)" "$LDSHIM/ld.gold"
+fi
+PATH="$LDSHIM:$PATH"
 
 mkdir -p "$OUT"
 
@@ -63,7 +103,7 @@ print(f"   wrote {len(fixtures)} fixtures to {sys.argv[1]}")
 PY
 
 echo ">> compiling the contract check"
-LD_LIBRARY_PATH="/tmp/swift-libs:${LD_LIBRARY_PATH:-}" \
+LD_LIBRARY_PATH="$SWIFTLIBS:${LD_LIBRARY_PATH:-}" \
   "$SWIFT" -o "$OUT/contract" \
   "$ROOT/ios/tests/BridgeContract/main.swift" \
   "$ROOT/ios/PySCF/Models/PySCFModels.swift"
@@ -76,7 +116,7 @@ FIXTURES="$OUT/fixtures.json" "$OUT/contract"
 # sphere radii still renders - it just looks empty, which no device-side
 # screenshot catches.
 echo ">> compiling the preview layout checks"
-LD_LIBRARY_PATH="/tmp/swift-libs:${LD_LIBRARY_PATH:-}" \
+LD_LIBRARY_PATH="$SWIFTLIBS:${LD_LIBRARY_PATH:-}" \
   "$SWIFT" -o "$OUT/layout" \
   "$ROOT/ios/tests/LayoutTests/main.swift" \
   "$ROOT/ios/PySCF/Models/PySCFModels.swift" \

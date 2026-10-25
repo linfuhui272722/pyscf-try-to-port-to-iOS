@@ -568,6 +568,66 @@ check(icon_name is None or has_car,
       "no CFBundleIconName without Assets.car",
       f"icon name {icon_name!r} but no catalog" if icon_name and not has_car else "")
 
+# ---------------------------------------------------------------------------
+# GIL release after Py_Initialize
+# ---------------------------------------------------------------------------
+# Py_Initialize leaves the GIL held by the calling thread. The app dispatches
+# each request onto the global concurrent queue, so the request that boots the
+# interpreter succeeds and every later one blocks forever inside
+# PyGILState_Ensure: the UI shows "Loading presets" and never fills in. That
+# happens at runtime, so it is invisible to a bundle inspection and has to be
+# checked on the binary: a correct build imports PyEval_SaveThread, a broken one
+# imports only Py_Initialize and the GIL-state functions.
+def imported_symbols(path):
+    data = open(path, "rb").read()
+
+    def parse(off):
+        magic, = struct.unpack_from("<I", data, off)
+        if magic != MH_MAGIC_64:
+            return None
+        ncmds, = struct.unpack_from("<I", data, off + 16)
+        pos, symtab = off + 32, None
+        for _ in range(ncmds):
+            cmd, cmdsize = struct.unpack_from("<II", data, pos)
+            if cmd == 0x2:
+                symtab = struct.unpack_from("<IIII", data, pos + 8)
+            pos += cmdsize
+        if symtab is None:
+            return None
+        symoff, nsyms, stroff, _ = symtab
+        symoff += off
+        stroff += off
+        names = []
+        for index in range(nsyms):
+            base = symoff + index * 16
+            n_strx, = struct.unpack_from("<I", data, base)
+            n_type = data[base + 4]
+            if (n_type & 0x0E) != 0:  # keep only N_UNDF (imports)
+                continue
+            end = data.index(b"\0", stroff + n_strx)
+            names.append(data[stroff + n_strx:end].decode())
+        return names
+
+    if len(data) >= 4 and struct.unpack_from(">I", data[:4])[0] == FAT_MAGIC:
+        count, = struct.unpack(">I", data[4:8])
+        for index in range(count):
+            base = 8 + index * 20
+            cputype, _, offset, _, _ = struct.unpack(">iiIII", data[base:base + 20])
+            if cputype == ARM64:
+                return parse(offset)
+        return None
+    return parse(0)
+
+
+executable = os.path.join(app, "PySCF")
+if os.path.isfile(executable):
+    imports = imported_symbols(executable) or []
+    check("_Py_Initialize" in imports, "app imports Py_Initialize")
+    check("_PyEval_SaveThread" in imports,
+          "app imports PyEval_SaveThread",
+          "GIL is never released after Py_Initialize; the second engine "
+          "request would hang and the UI would stay on 'Loading presets'"
+          if "_PyEval_SaveThread" not in imports else "")
 
 print("")
 if failures:
