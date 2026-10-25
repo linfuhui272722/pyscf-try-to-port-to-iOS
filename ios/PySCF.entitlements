@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Raises the process memory ceiling above the default jetsam limit.
+
+      A PySCF DFT calculation holds several large dense arrays at once — the
+      density matrices, the grid blocks and the two-electron integrals — and the
+      default limit on a tablet is low enough that a routine calculation can be
+      killed mid-run. A jetsam kill is silent: no crash report, no Python
+      traceback, just a process that stops. That is indistinguishable from the
+      segfault this port was chasing, so the ceiling is raised to separate the
+      two.
+
+      This entitlement is honoured by the kernel for a platform-signed or
+      TrollStore-style install; a plain development signature ignores it, in
+      which case the app behaves exactly as before.
+    -->
+    <key>com.apple.developer.kernel.increased-memory-limit</key>
+    <true/>
+
+    <!--
+      Permits the debugger and the performance tools to attach. Harmless for an
+      ad-hoc signed build, and it keeps `lldb` usable if the app is ever run
+      under Xcode.
+    -->
+    <key>get-task-allow</key>
+    <true/>
+</dict>
+</plist>

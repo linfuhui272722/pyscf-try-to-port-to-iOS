@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .diaglog import crash_probe, get_logger
+
 __all__ = ["max_abs", "rms", "rigid_body_basis", "minimise"]
 
 
@@ -99,6 +101,16 @@ def minimise(
     if size == 0:
         raise ValueError("no coordinates to optimise")
 
+    # Each step is logged as it starts and finishes. The device crash this was
+    # added for happened on the second step and left no record anywhere, so the
+    # last line before the log stops is the whole point of these calls.
+    logger = get_logger()
+    logger.write(
+        f"minimise: start, {size // 3} atoms ({size} coords), maxSteps={max_steps} "
+        f"tolGrad={conv_tol_grad} tolE={conv_tol_energy}; {crash_probe()}",
+        tag="geomopt",
+    )
+
     energy, gradient = energy_and_grad(x)
     gradient = _project(x, gradient, projector)
     hessian = np.eye(size)
@@ -111,6 +123,10 @@ def minimise(
             "deltaE": None,
         }
     ]
+    logger.write(
+        f"minimise: step 0 done, E={energy:.10f} max|g|={max_abs(gradient):.3e}; {crash_probe()}",
+        tag="geomopt",
+    )
     converged = False
     message = "maximum steps reached"
 
@@ -131,8 +147,16 @@ def minimise(
         step_size = min(1.0, max_step_size / largest) if largest > 0 else 1.0
 
         trial = None
+        attempt = 0
         while step_size > 1e-10:
+            attempt += 1
             trial = x + step_size * direction
+            # Logged before the call, not after: if the SCF or the gradient
+            # driver dies inside it, this is the line that says so.
+            logger.write(
+                f"minimise: step {step} trial {attempt} at stepSize={step_size:.6f}; {crash_probe()}",
+                tag="geomopt",
+            )
             trial_energy, trial_gradient = energy_and_grad(trial)
             trial_gradient = _project(trial, trial_gradient, projector)
             if trial_energy <= energy + 1e-4 * step_size * float(gradient @ direction):
@@ -141,6 +165,7 @@ def minimise(
             step_size *= 0.5
 
         if trial is None:
+            logger.write(f"minimise: step {step} line search exhausted", tag="geomopt")
             message = "line search could not lower the energy"
             break
 
@@ -163,6 +188,11 @@ def minimise(
                 "deltaE": float(delta_e),
             }
         )
+        logger.write(
+            f"minimise: step {step} done, E={energy:.10f} dE={delta_e:+.3e} "
+            f"max|g|={max_abs(gradient):.3e}; {crash_probe()}",
+            tag="geomopt",
+        )
 
         if max_abs(gradient) < conv_tol_grad:
             converged, message = True, "converged"
@@ -173,6 +203,11 @@ def minimise(
             converged, message = True, "converged"
             break
 
+    logger.write(
+        f"minimise: finished, steps={len(trajectory) - 1} converged={converged} "
+        f"({message}); {crash_probe()}",
+        tag="geomopt",
+    )
     return {
         "x": x,
         "energy": float(energy),

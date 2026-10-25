@@ -53,6 +53,15 @@
 "diag.logFiles" = "Log files";
 "diag.noLogLocation" = "No writable log location found.";
 "diag.notCollected" = "Not collected. It is written to the log whenever the engine is unavailable.";
+"diag.openmp" = "OpenMP runtime";
+"diag.openmpHint" = "Runs one real parallel region. A thread count only proves the runtime loaded; this proves it can start workers.";
+"diag.runProbe" = "Run probe";
+"diag.probeNotRun" = "Probe not run yet.";
+"diag.deviceLog" = "Device log";
+"diag.deviceLogHint" = "Written line by line as the calculation runs, and flushed each time. The last line before the app stops names the step that was running.";
+"diag.deviceLogEmpty" = "Log is empty.";
+"diag.reloadLog" = "Reload";
+"diag.clearLog" = "Clear";
 "engine.booting" = "Booting embedded CPython";
 "engine.noReason" = "no reason reported";
 "engine.online" = "Engine online";

@@ -15,12 +15,41 @@ Two transport styles are supported:
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 import traceback
 
 from . import __version__, engine
+from .diaglog import crash_probe, get_logger, install_exit_marker, install_faulthandler
 
 PROTOCOL_VERSION = 1
+
+_BOOT_LOGGED = False
+
+
+def _log_boot() -> None:
+    """Install the crash record once, on the first request.
+
+    Done here rather than at import time so that a failure to write the log
+    cannot stop the module from being imported — the bridge has to keep working
+    even if diagnostics do not.
+    """
+    global _BOOT_LOGGED
+    if _BOOT_LOGGED:
+        return
+    _BOOT_LOGGED = True
+    try:
+        logger = get_logger()
+        logger.section(f"bridge ready, package {__version__}")
+        logger.write(f"log file: {logger.path}", tag="boot")
+        logger.write(f"platform={sys.platform} executable={sys.executable}", tag="boot")
+        logger.write(f"prefix={sys.prefix} home={os.environ.get('PYTHONHOME')}", tag="boot")
+        logger.write(f"state: {crash_probe()}", tag="boot")
+        install_faulthandler()
+        install_exit_marker()
+    except Exception:
+        pass
 
 
 def capabilities() -> dict:
@@ -43,6 +72,7 @@ def capabilities() -> dict:
             "ccsd",
             "bond_scan",
             "optimise",
+            "openmp",
         ],
         "basisSets": list(engine.BASIS_SETS),
         "functionals": list(engine.FUNCTIONALS),
@@ -55,25 +85,43 @@ def handle_json(request_json: str) -> str:
 
     This is the single entry point used by the embedded interpreter, so it must
     never raise: any failure is reported as a JSON-RPC error object instead.
+
+    Every request is bracketed in the diagnostic log.  The line is written
+    before dispatch, so if the process is killed mid-calculation the log names
+    the request that was running — which is the one thing a crash report on a
+    device does not reliably tell you.
     """
+    _log_boot()
+    logger = get_logger()
+
     try:
         request = json.loads(request_json)
     except json.JSONDecodeError as exc:
+        logger.write(f"request: parse error ({exc})", tag="rpc")
         return json.dumps(
             {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"parse error: {exc}"}}
         )
 
     if not isinstance(request, dict):
+        logger.write("request: not an object", tag="rpc")
         return json.dumps(
             {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "request must be an object"}}
         )
 
-    if request.get("method") == "capabilities":
+    method = request.get("method")
+    if method == "capabilities":
         return json.dumps({"jsonrpc": "2.0", "id": request.get("id"), "result": capabilities()})
 
+    params = request.get("params") or {}
+    # Keys only: the atom list can be long and the log is read on a phone.
+    detail = ", ".join(sorted(params)) if isinstance(params, dict) else type(params).__name__
+    logger.write(f"request #{request.get('id')}: {method} ({detail})", tag="rpc")
+    started = time.perf_counter()
+
     try:
-        return json.dumps(engine.handle(request))
+        payload = engine.handle(request)
     except Exception as exc:  # pragma: no cover - defensive, engine.handle is guarded
+        logger.write(f"request #{request.get('id')}: {method} raised {type(exc).__name__}: {exc}", tag="rpc")
         return json.dumps(
             {
                 "jsonrpc": "2.0",
@@ -85,6 +133,17 @@ def handle_json(request_json: str) -> str:
                 },
             }
         )
+
+    elapsed = (time.perf_counter() - started) * 1000.0
+    if "error" in payload:
+        logger.write(
+            f"request #{request.get('id')}: {method} failed in {elapsed:.0f}ms — "
+            f"{payload['error'].get('message')}",
+            tag="rpc",
+        )
+    else:
+        logger.write(f"request #{request.get('id')}: {method} ok in {elapsed:.0f}ms", tag="rpc")
+    return json.dumps(payload)
 
 
 def main(argv: list[str] | None = None) -> int:

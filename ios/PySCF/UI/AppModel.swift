@@ -143,6 +143,8 @@ final class AppModel: ObservableObject {
     @Published var logText = ""
     @Published var diagnostics: String = ""
     @Published var logLocations: [String] = []
+    @Published var deviceLog: String = ""
+    @Published var openmpReport: String = ""
 
     private let engine = PySCFEngine()
     private var didBootstrap = false
@@ -201,6 +203,38 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - Actions
+
+    /// Reloads the on-device log into the UI.
+    ///
+    /// The log is written as the calculation runs, so this is how the run that
+    /// crashed is inspected afterwards: relaunch, open Diagnostics, and the
+    /// final lines name the step that was in progress.
+    func refreshDeviceLog() {
+        deviceLog = DiagnosticsLog.shared.tail()
+    }
+
+    /// Runs the OpenMP canary.
+    ///
+    /// Worth doing before a geometry optimisation, because it is the difference
+    /// between "the runtime is loaded" and "the runtime can run a parallel
+    /// region". The reported thread count cannot tell those apart.
+    func probeOpenMP() async {
+        do {
+            let report = try await engine.openmp()
+            openmpReport = report.prettyPrinted()
+            DiagnosticsLog.shared.writeBlock(openmpReport, tag: "openmp")
+        } catch {
+            openmpReport = "probe failed: "
+                + ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            DiagnosticsLog.shared.write(openmpReport, tag: "openmp")
+        }
+        refreshDeviceLog()
+    }
+
+    func clearDeviceLog() {
+        DiagnosticsLog.shared.clear()
+        refreshDeviceLog()
+    }
 
     func apply(_ preset: MoleculePreset) {
         atomSpec = preset.atoms

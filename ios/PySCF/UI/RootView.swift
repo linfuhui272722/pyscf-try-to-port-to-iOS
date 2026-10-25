@@ -146,9 +146,54 @@ struct DiagnosticsScreen: View {
                         }
                     }
                 }
+
+                Panel(title: L("diag.openmp"), systemImage: "cpu") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L("diag.openmpHint"))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            Button(L("diag.runProbe")) {
+                                Task { await model.probeOpenMP() }
+                            }
+                            .disabled(model.isBusy)
+                            Button(L("diag.reloadLog")) { model.refreshDeviceLog() }
+                            Button(L("diag.clearLog"), role: .destructive) { model.clearDeviceLog() }
+                        }
+                        if model.openmpReport.isEmpty {
+                            Text(L("diag.probeNotRun"))
+                        } else {
+                            Text(model.openmpReport)
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+
+                Panel(title: L("diag.deviceLog"), systemImage: "doc.plaintext") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L("diag.deviceLogHint"))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        if model.deviceLog.isEmpty {
+                            Text(L("diag.deviceLogEmpty"))
+                        } else {
+                            // Bottom-anchored: when a run crashes, the answer is
+                            // in the last few lines, so they are shown first.
+                            ScrollView {
+                                Text(model.deviceLog)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 320)
+                        }
+                    }
+                }
             }
             .padding()
         }
+        .onAppear { model.refreshDeviceLog() }
     }
 }
 

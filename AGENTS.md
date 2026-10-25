@@ -303,3 +303,62 @@ Three things about it are load-bearing and easy to break:
 `wb97x-d` has no gradient implementation upstream and raises
 `NotImplementedError` for both single points and relaxation; it is a
 pre-existing PySCF limitation, not something the optimiser introduced.
+
+## The engine payload is overlaid, not trusted
+
+`scripts/build-ios-app.sh` unpacks a prebuilt tarball
+(`build/products/ios-arm64/pyscf-2.14.0-ios-arm64.tar.gz`) into site-packages,
+and that tarball is a snapshot taken by `scripts/build-pyscf-ios.sh`. Editing
+`src/pyscf_mobile/` alone therefore does **not** reach the app: the build
+succeeds and ships the previous revision, so the edited module appears to run
+and behaves exactly as before.
+
+The script now copies the current sources over the unpacked package on every
+build. The copy uses `src/pyscf_mobile/.` into the existing directory, because
+`cp -R src/pyscf_mobile target/` where `target/pyscf_mobile` exists copies
+*into* it and produces `pyscf_mobile/pyscf_mobile`.
+
+Compiled modules such as `_pyscf_mobile_accel.cpython-313-iphoneos.so` are not
+in `src/`; they come only from the tarball and must survive the overlay. Check
+they are still present after changing the staging code.
+
+If a Python change seems to have no effect on device, verify it is actually in
+the bundle before debugging anything else:
+
+```
+grep -c SOME_NEW_SYMBOL \
+  build/products/ios-arm64/PySCF.app/python/lib/python3.13/site-packages/pyscf_mobile/engine.py
+```
+
+## Crash diagnostics
+
+`src/pyscf_mobile/diaglog.py` writes an append-only log, and the same file is
+written from Swift by `DiagnosticsLog`. Three details are deliberate:
+
+* **The Swift side writes synchronously and fsyncs.** The point of the log is
+  the last line before the process dies; an async write is still queued when
+  the process is killed and is lost.
+* **Both sides open with `O_APPEND`.** Python opens with `"a"` and Swift with
+  `O_APPEND`, so neither can interleave with or overwrite the other's lines.
+  A seek-then-write on the Swift side would.
+* **Swift passes the path to Python via `PYSCF_MOBILE_LOG`.** Left to resolve
+  their own preferred location the two sides can disagree and split the record
+  across two files, each missing the lines that explain the other.
+
+The Diagnostics screen has a log viewer, a clear button, and an OpenMP probe.
+The probe (`omp_probe.openmp_report`) runs a real parallel region through
+`NPomp_dcopy`; a thread count only proves libomp loaded, not that it can start
+a worker. On iOS the probe runs in-process, so a crash inside the region ends
+the log immediately after the "entering parallel region" line — that line is
+the finding.
+
+`OMP_STACKSIZE` is set to 8192K at boot in `PythonBridge.configureOpenMP`.
+LLVM's libomp gives x86/x86_64 workers 2 MB/4 MB but falls through to 1 MB for
+every other architecture, and AArch64 also has no `KMP_BACKUP_STKSIZE`
+fallback. The runtime reads this once, when the pool initialises, so it has to
+be set before the first parallel region. `max_memory` is likewise capped in
+`engine._make_method`; PySCF defaults to 2000 MB, a desktop figure.
+
+Note that a jetsam (memory) kill and a segfault both leave no crash report.
+Raising the memory ceiling via `ios/PySCF.entitlements` is what distinguishes
+them; the entitlement is embedded on the main executable only.

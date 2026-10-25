@@ -140,9 +140,27 @@ mkdir -p "$ENGINE_DIR"
 if [ -f "$PAYLOAD" ]; then
   tar -xzf "$PAYLOAD" -C "$ENGINE_DIR"
 else
-  echo "   payload tarball not found; copying from src/ instead"
-  cp -R "$ROOT/src/pyscf_mobile" "$ENGINE_DIR/"
+  echo "   payload tarball not found; staging from src/ instead"
+  mkdir -p "$ENGINE_DIR/pyscf_mobile"
 fi
+
+# Overlay the current engine sources on top of whatever was just unpacked.
+#
+# The tarball is a snapshot taken by build-pyscf-ios.sh, so a change to
+# src/pyscf_mobile/ that was not followed by a full PySCF rebuild never reaches
+# the app: the build succeeds and ships the previous revision. That is a silent
+# failure — the edited module appears to run and behave as it did before — so the
+# sources are copied in every time rather than trusted to the archive.
+#
+# The copy is `src/pyscf_mobile/.` into the existing package directory on
+# purpose. `cp -R src/pyscf_mobile target/` where target/pyscf_mobile exists
+# copies *into* it, producing pyscf_mobile/pyscf_mobile. The trailing `/.` copies
+# the contents instead. Compiled modules such as
+# _pyscf_mobile_accel.cpython-313-iphoneos.so are absent from src/ and are
+# therefore left as the tarball supplied them.
+echo "   overlaying current sources from src/pyscf_mobile"
+rm -rf "$ENGINE_DIR/pyscf_mobile/__pycache__"
+cp -R "$ROOT/src/pyscf_mobile/." "$ENGINE_DIR/pyscf_mobile/"
 
 if [ -n "$NUMPY_WHEEL" ]; then
   echo ">> staging NumPy from $(basename "$NUMPY_WHEEL")"
@@ -430,6 +448,20 @@ if [ -x "$ROOT/build/toolchain/bin/ldid" ]; then
   #
   # Ad-hoc signatures do not cover nested content, so the order does not
   # matter; each image is signed independently.
+  #
+  # The entitlements are applied to the main executable only. They describe
+  # process-level privileges — the memory ceiling in particular — which the
+  # kernel reads from the main binary, and ldid rejects the plist on a nested
+  # image that has no Info.plist to bind it to.
+  ENTITLEMENTS="$ROOT/ios/PySCF.entitlements"
+  MAIN_ENTITLEMENTS=""
+  if [ -f "$ENTITLEMENTS" ]; then
+    MAIN_ENTITLEMENTS="$ENTITLEMENTS"
+    echo ">> embedding entitlements from ios/PySCF.entitlements"
+  else
+    echo "!! ios/PySCF.entitlements missing; signing without entitlements" >&2
+  fi
+
   echo ">> ad-hoc signing bundled images"
   SIGNED=0
   while IFS= read -r -d '' candidate; do
@@ -438,7 +470,13 @@ if [ -x "$ROOT/build/toolchain/bin/ldid" ]; then
       cffaedfe|cefaedfe|cafebabe|bebafeca|cafebabf|bfbafeca) ;;
       *) continue ;;
     esac
-    if "$ROOT/build/toolchain/bin/ldid" -S "$candidate" 2>/dev/null; then
+    if [ "$candidate" = "$EXECUTABLE" ] && [ -n "$MAIN_ENTITLEMENTS" ]; then
+      if "$ROOT/build/toolchain/bin/ldid" -S"$MAIN_ENTITLEMENTS" "$candidate" 2>/dev/null; then
+        SIGNED=$((SIGNED + 1))
+      else
+        echo "   could not sign $candidate with entitlements" >&2
+      fi
+    elif "$ROOT/build/toolchain/bin/ldid" -S "$candidate" 2>/dev/null; then
       SIGNED=$((SIGNED + 1))
     else
       echo "   could not sign $candidate" >&2

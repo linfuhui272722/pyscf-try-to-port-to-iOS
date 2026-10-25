@@ -23,6 +23,7 @@ import traceback
 from typing import Any, Iterable
 
 from . import geometry
+from .diaglog import crash_probe, get_logger
 
 # --------------------------------------------------------------------------
 # Optional PySCF import.  Keeping the import lazy lets the UI start up and show
@@ -88,6 +89,13 @@ FUNCTIONALS = (
 )
 
 METHODS = ("RHF", "UHF", "ROHF", "RKS", "UKS", "MP2", "CCSD")
+
+# Ceiling handed to PySCF for sizing its integral and DFT grid buffers, in MB.
+# PySCF's own default is 2000, which assumes a desktop; on a tablet the buffers
+# that figure implies push the process into the OS memory limit, and a memory
+# kill leaves no crash report.  The grid loop adapts by using smaller blocks, so
+# the cost of a lower value is time rather than correctness.
+DEFAULT_MAX_MEMORY_MB = 512
 
 # CODATA Bohr radius in Angstrom.  PySCF's coordinate and gradient units are
 # Bohr, so the optimiser converts at its boundaries.
@@ -404,6 +412,12 @@ def _make_method(mol, method: str, xc: str, params: dict):
     level = params.get("gridLevel")
     if level is not None and hasattr(mf, "grids"):
         mf.grids.level = int(level)
+    # PySCF sizes its DFT grid buffers from ``max_memory``, which defaults to
+    # 2000 MB — a desktop figure. On a tablet that over-commits and the process
+    # is killed by the OS, which leaves no crash log at all. Capping it makes the
+    # grid loop use smaller blocks, which is slower but bounded.
+    if hasattr(mf, "max_memory"):
+        mf.max_memory = float(params.get("maxMemory", DEFAULT_MAX_MEMORY_MB))
     return mf
 
 
@@ -471,9 +485,23 @@ def _run_mean_field(params: dict, dm0=None):
     mol = _build_mol(atoms, basis, int(params.get("charge", 0)), int(params.get("spin", 0)),
                      params.get("unit", "Angstrom"))
     buf = io.StringIO()
+    # The SCF is the longest single call in the app and the one most likely to
+    # be running when the process dies, so it is bracketed in the log.  Written
+    # before the call: if it never returns, this line is the last one.
+    logger = get_logger()
+    logger.write(
+        f"scf: starting {method}/{basis} xc={xc} natm={len(atoms)} "
+        f"grid={params.get('gridLevel')} dm0={'yes' if dm0 is not None else 'no'}; {crash_probe()}",
+        tag="scf",
+    )
     with contextlib.redirect_stdout(buf):
         mf = _make_method(mol, method, xc, params)
         mf.kernel(dm0=dm0)
+    logger.write(
+        f"scf: finished E={mf.e_tot:.10f} cycles={getattr(mf, 'cycles', '?')} "
+        f"converged={mf.converged}; {crash_probe()}",
+        tag="scf",
+    )
     return mf, atoms, basis, method, buf.getvalue()
 
 
@@ -632,6 +660,14 @@ def run_geometry_optimisation(params: dict) -> dict:
     call_log: list[str] = []
     state = {"mf": None, "atoms": None, "dm": None}
 
+    logger = get_logger()
+    logger.section(f"optimise {method}/{basis} xc={xc} relaxGrid={relax_level} prodGrid={production_level}")
+    logger.write(
+        f"optimise: {len(params['atoms']) if isinstance(params.get('atoms'), list) else '?'} atoms, "
+        f"maxSteps={max_steps}, charge={base['charge']}, spin={base['spin']}; {crash_probe()}",
+        tag="optimise",
+    )
+
     def energy_and_grad(flat):
         # PySCF takes and returns Bohr; the UI works in Angstrom.
         coords = np.asarray(flat, dtype=float).reshape(-1, 3)
@@ -646,12 +682,23 @@ def run_geometry_optimisation(params: dict) -> dict:
             step_params["gridLevel"] = relax_level
         # Seeding each step with the previous density matrix keeps the atom
         # basis fixed, so the matrix stays valid across the relaxation.
+        #
+        # The two calls below are separated by a log line each: an SCF failure
+        # and a gradient failure need different fixes, and a crash between them
+        # is otherwise indistinguishable from a crash inside either.
+        logger.write(f"energy_and_grad: SCF starting (gridLevel={step_params.get('gridLevel')})", tag="optimise")
         mf, built, _basis, _method, log = _run_mean_field(step_params, dm0=state["dm"])
+        logger.write(f"energy_and_grad: SCF done, E={mf.e_tot:.10f} converged={mf.converged}", tag="optimise")
         if not mf.converged:
             call_log.append("warning: an SCF cycle during the relaxation did not converge")
         state["mf"] = mf
         state["dm"] = mf.make_rdm1()
+        logger.write("energy_and_grad: gradient starting", tag="optimise")
         gradient = np.asarray(_gradient_method(mf).kernel(), dtype=float).reshape(-1)
+        logger.write(
+            f"energy_and_grad: gradient done, max|g|={np.max(np.abs(gradient)):.3e}",
+            tag="optimise",
+        )
         return float(mf.e_tot), gradient
 
     initial = _coerce_atoms(params["atoms"])
@@ -660,6 +707,7 @@ def run_geometry_optimisation(params: dict) -> dict:
     # whole relaxation runs in Bohr and is converted back at the end.
     reference = _build_mol(initial, basis, base["charge"], base["spin"], "Angstrom")
     x0 = np.asarray(reference.atom_coords(), dtype=float).reshape(-1)
+    logger.write(f"optimise: reference built, {x0.size // 3} atoms, starting minimiser", tag="optimise")
 
     outcome = geomopt.minimise(
         x0,
@@ -669,6 +717,11 @@ def run_geometry_optimisation(params: dict) -> dict:
         conv_tol_energy=conv_tol_energy,
     )
     wall_ms = (time.perf_counter() - start) * 1000.0
+    logger.write(
+        f"optimise: minimiser returned after {wall_ms:.0f}ms, "
+        f"steps={outcome['steps']} converged={outcome['converged']}",
+        tag="optimise",
+    )
 
     # The relaxation grid is deliberately coarse, so re-evaluate the converged
     # geometry on the production grid.  This is what makes the reported energy
@@ -684,12 +737,14 @@ def run_geometry_optimisation(params: dict) -> dict:
         refine_params["atoms"] = relaxed_atoms
         refine_params["unit"] = "Bohr"
         refine_params["gridLevel"] = production_level
+        logger.write(f"optimise: refining on production grid (level {production_level})", tag="optimise")
         mf, _b, _ba, _m, refine_log = _run_mean_field(refine_params, dm0=state["dm"])
         if refine_log.strip():
             call_log.append(refine_log.strip())
         gradient = np.asarray(_gradient_method(mf).kernel(), dtype=float).reshape(-1)
         state["mf"] = mf
         refined = (float(mf.e_tot), gradient)
+        logger.write(f"optimise: refined, E={mf.e_tot:.10f}", tag="optimise")
 
     final_coords = outcome["x"].reshape(-1, 3)
     # geometry.describe expects Angstrom.
@@ -768,6 +823,10 @@ def dispatch(method: str, params: dict) -> dict:
         return {"ok": True, **engine_status()}
     if method == "diagnostics":
         return diagnostics()
+    if method == "openmp":
+        from .omp_probe import openmp_report
+
+        return {"ok": True, **openmp_report()}
 
     handlers = {
         "scf": run_scf,

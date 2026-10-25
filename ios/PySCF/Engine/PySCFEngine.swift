@@ -86,6 +86,15 @@ struct PySCFEngine {
         try await run { try call("diagnostics") }
     }
 
+    /// Runs the OpenMP canary and returns its report.
+    ///
+    /// This is the one check that tells "libomp loaded" apart from "libomp can
+    /// start worker threads", so it is exposed separately from
+    /// ``diagnostics()`` rather than folded into it.
+    func openmp() async throws -> JSONObject {
+        try await run { try call("openmp") }
+    }
+
     func elements() async throws -> [Element] {
         try await run { try call("elements").objects("elements").map(Element.init) }
     }

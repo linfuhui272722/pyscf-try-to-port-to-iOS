@@ -107,9 +107,69 @@ final class PythonBridge: @unchecked Sendable {
 
     // MARK: - CPython plumbing
 
+    // MARK: - OpenMP configuration
+
+    /// Sets the OpenMP environment *before* libomp is first used.
+    ///
+    /// The runtime reads these once, when it initialises its thread pool, so
+    /// they have to be in the environment before the first parallel region —
+    /// which is why this runs at boot rather than being settable from the UI
+    /// afterwards.
+    ///
+    /// ``OMP_STACKSIZE`` is the important one.  LLVM's libomp only defines a
+    /// large default worker stack for x86 and x86_64 (2 MB and 4 MB); every
+    /// other architecture, AArch64 included, falls through to a 1 MB default,
+    /// and the x86_64-only ``KMP_BACKUP_STKSIZE`` fallback is absent too.  So on
+    /// an arm64 device each OpenMP worker gets 1 MB, where the same code on a
+    /// desktop gets 4 MB.  Whether that is enough is not knowable in advance —
+    /// it depends on the depth of PySCF's integral-evaluation call chain under
+    /// the worker's own frames — so it is set to the desktop value and the
+    /// outcome is logged.
+    ///
+    /// This is consistent with the symptom that started the investigation:
+    /// serial beta.17 relaxed geometries fine, and beta.18 changed only the
+    /// threading, so the SCF that runs inside the second relaxation step now
+    /// executes on worker threads rather than the main thread.  That is the
+    /// first point at which a worker stack is used at all.
+    ///
+    /// The value is set only when the caller has not chosen one, so a user can
+    /// still override it.
+    private func configureOpenMP() {
+        // Point the Python logger at the same file this side writes to, so the
+        // two halves of the record are not split across destinations that only
+        // one of them can see.
+        if let destination = DiagnosticsLog.shared.primaryDestination, getenv("PYSCF_MOBILE_LOG") == nil {
+            setenv("PYSCF_MOBILE_LOG", destination, 1)
+            DiagnosticsLog.shared.write("log: PYSCF_MOBILE_LOG=\(destination)", tag: "bridge")
+        }
+
+        let defaults: [(String, String)] = [
+            // 8 MB matches the x86_64 default and the usual Linux pthread stack,
+            // so the same code paths get the room they are tested with.
+            ("OMP_STACKSIZE", "8192K"),
+            // Keep a worker's stack resident between parallel regions. Relaxation
+            // enters a region every step; letting the pool tear down and rebuild
+            // each time both costs time and re-runs the thread creation that is
+            // under suspicion.
+            ("KMP_BLOCKTIME", "200"),
+        ]
+
+        for (key, value) in defaults where getenv(key) == nil {
+            setenv(key, value, 1)
+            DiagnosticsLog.shared.write("openmp: \(key)=\(value) (default applied)", tag: "bridge")
+        }
+        for key in ["OMP_STACKSIZE", "KMP_BLOCKTIME", "OMP_NUM_THREADS"] {
+            if let current = getenv(key) {
+                DiagnosticsLog.shared.write("openmp: \(key)=\(String(cString: current)) (already set)", tag: "bridge")
+            }
+        }
+    }
+
     private func boot() throws {
         DiagnosticsLog.shared.write("boot: pythonHome=\(pythonHome?.path ?? "nil")", tag: "bridge")
         DiagnosticsLog.shared.write("boot: sitePackages=\(sitePackages.map(\.path))", tag: "bridge")
+
+        configureOpenMP()
 
         if let home = pythonHome, let cHome = Py_DecodeLocale(home.path, nil) {
             Py_SetPythonHome(cHome)

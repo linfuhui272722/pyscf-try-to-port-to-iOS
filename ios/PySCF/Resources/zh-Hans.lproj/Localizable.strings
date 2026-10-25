@@ -53,6 +53,15 @@
 "diag.logFiles" = "日志文件";
 "diag.noLogLocation" = "未找到可写的日志位置。";
 "diag.notCollected" = "尚未收集。引擎不可用时会自动写入日志。";
+"diag.openmp" = "OpenMP 运行时";
+"diag.openmpHint" = "真实运行一次并行区域。线程数只能说明运行时已载入，这一项才能证明工作线程可以创建。";
+"diag.runProbe" = "运行探测";
+"diag.probeNotRun" = "尚未运行探测。";
+"diag.deviceLog" = "设备日志";
+"diag.deviceLogHint" = "计算过程中逐行写入并立即落盘。应用停止前的最后一行会指出当时正在执行的步骤。";
+"diag.deviceLogEmpty" = "日志为空。";
+"diag.reloadLog" = "重新载入";
+"diag.clearLog" = "清空";
 "engine.booting" = "正在载入内嵌 CPython";
 "engine.noReason" = "未报告原因";
 "engine.online" = "引擎在线";
