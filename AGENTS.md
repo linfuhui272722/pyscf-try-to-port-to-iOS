@@ -232,3 +232,31 @@ compiler then looks like a test failure rather than a setup gap.
 SciPy/h5py, and that global state leaks into `test_engine.py`. `run_tests.py`
 therefore runs each module in its own interpreter. Do not merge them into one
 process.
+
+## Geometry optimisation
+
+The app relaxes geometries with `src/pyscf_mobile/geomopt.py`, not with PySCF's
+own solvers. `pyscf.geomopt.berny_solver` needs the `berny` package and
+`geometric_solver` needs `geometric`, and neither can be cross-compiled for iOS
+(`geometric` pulls in SciPy's Fortran linear algebra, which this toolchain has
+no compiler for). `geomopt.minimise` is a BFGS minimiser on the analytic
+gradients PySCF already provides, written on NumPy alone.
+
+Three things about it are load-bearing and easy to break:
+
+* **Units.** PySCF coordinates and gradients are in Bohr, the UI and
+  `geometry.py` are in Angstrom. The relaxation runs entirely in Bohr and
+  converts at the boundary in `engine.run_geometry_optimisation`.
+* **Rigid-body projection.** Translations and rotations cost no energy, so an
+  unprojected gradient makes the molecule drift and tumble until the atoms
+  wander out of the basis-set region. Every gradient is projected against the
+  rigid-body basis before it becomes a step direction. `test_geomopt.py`
+  asserts the centroid is unchanged.
+* **Every basis set must work.** The gradient driver is taken from the
+  mean-field object (`mf.nuc_grad_method()`), so all of `BASIS_SETS` is covered
+  without special cases. `test_optimise_works_for_every_basis_set` runs the
+  whole list, which is why that suite is slow.
+
+`wb97x-d` has no gradient implementation upstream and raises
+`NotImplementedError` for both single points and relaxation; it is a
+pre-existing PySCF limitation, not something the optimiser introduced.

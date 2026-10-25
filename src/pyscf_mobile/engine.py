@@ -89,6 +89,10 @@ FUNCTIONALS = (
 
 METHODS = ("RHF", "UHF", "ROHF", "RKS", "UKS", "MP2", "CCSD")
 
+# CODATA Bohr radius in Angstrom.  PySCF's coordinate and gradient units are
+# Bohr, so the optimiser converts at its boundaries.
+_BOHR_TO_ANGSTROM = 0.52917721092
+
 _PRESET_ATOMS: dict[str, str] = {
     "water": "O 0 0 0; H 0 0 0.9584; H 0 0.9267 -0.2421",
     "methane": (
@@ -382,16 +386,26 @@ def _make_method(mol, method: str, xc: str, params: dict):
 
 
 def _finalise(mf, atoms, method, basis, wall_ms, log, include) -> dict:
-    mo_energy = np.asarray(mf.mo_energy, dtype=float).ravel()
-    mo_occ = np.asarray(mf.mo_occ, dtype=float).ravel()
-    homo, lumo = _homo_lumo(mo_energy, mo_occ)
-
     result: dict[str, Any] = {
         "ok": True,
         "method": f"{method}/{basis}",
         "energy": round(float(mf.e_tot), 10),
         "converged": bool(mf.converged),
         "cycles": int(getattr(mf, "cycles", 0) or 0),
+        "wallTimeMs": round(wall_ms, 3),
+        "log": log[-4000:],
+    }
+    result.update(_electronic_structure(mf, atoms, include))
+    return result
+
+
+def _electronic_structure(mf, atoms, include) -> dict:
+    """Orbital, population and density payloads for one converged calculation."""
+    mo_energy = np.asarray(mf.mo_energy, dtype=float).ravel()
+    mo_occ = np.asarray(mf.mo_occ, dtype=float).ravel()
+    homo, lumo = _homo_lumo(mo_energy, mo_occ)
+
+    result: dict[str, Any] = {
         "nElectrons": int(mf.mol.nelectron),
         "nBasis": int(mf.mol.nao_nr()),
         "nAlpha": int(mf.mol.nelec[0]),
@@ -403,8 +417,6 @@ def _finalise(mf, atoms, method, basis, wall_ms, log, include) -> dict:
         "occupations": [round(float(o), 6) for o in mo_occ],
         "dipole": _dipole(mf),
         "mulliken": _mulliken(mf, atoms),
-        "wallTimeMs": round(wall_ms, 3),
-        "log": log[-4000:],
     }
     if "mo" in include:
         result["moCoefficients"] = np.asarray(mf.mo_coeff, dtype=float).tolist()
@@ -417,25 +429,35 @@ def _finalise(mf, atoms, method, basis, wall_ms, log, include) -> dict:
     return result
 
 
-def run_scf(params: dict) -> dict:
-    """Run a Hartree-Fock or Kohn-Sham calculation."""
+def _run_mean_field(params: dict):
+    """Build the molecule and converge the requested mean field.
+
+    Returns ``(mf, atoms, basis, method, log)``.  Shared by ``run_scf`` and the
+    geometry optimiser, which needs the converged object to reach its gradient
+    method.
+    """
     _require_pyscf()
     atoms = _coerce_atoms(params["atoms"])
     basis = str(params.get("basis", "sto-3g"))
-    charge = int(params.get("charge", 0))
-    spin = int(params.get("spin", 0))
-    method = str(params.get("method", "RHF"))
+    method = str(params.get("method", "RHF")).upper()
     xc = str(params.get("xc", "b3lyp"))
-    include = {str(x).lower() for x in params.get("include", [])}
 
-    mol = _build_mol(atoms, basis, charge, spin, params.get("unit", "Angstrom"))
+    mol = _build_mol(atoms, basis, int(params.get("charge", 0)), int(params.get("spin", 0)),
+                     params.get("unit", "Angstrom"))
     buf = io.StringIO()
-    start = time.perf_counter()
     with contextlib.redirect_stdout(buf):
         mf = _make_method(mol, method, xc, params)
         mf.kernel()
+    return mf, atoms, basis, method, buf.getvalue()
+
+
+def run_scf(params: dict) -> dict:
+    """Run a Hartree-Fock or Kohn-Sham calculation."""
+    include = {str(x).lower() for x in params.get("include", [])}
+    start = time.perf_counter()
+    mf, atoms, basis, method, log = _run_mean_field(params)
     wall_ms = (time.perf_counter() - start) * 1000.0
-    return _finalise(mf, atoms, method.upper(), basis, wall_ms, buf.getvalue(), include)
+    return _finalise(mf, atoms, method, basis, wall_ms, log, include)
 
 
 def _post_hf(params: dict, kind: str) -> dict:
@@ -523,6 +545,132 @@ def run_bond_scan(params: dict) -> dict:
     }
 
 
+def _gradient_method(mf):
+    """Return the analytic gradient driver for ``mf``, or raise a clear error.
+
+    Every basis set in ``BASIS_SETS`` is supported, because the gradient driver
+    is derived from the mean-field object itself.  A few Kohn-Sham functionals
+    have no gradient implementation upstream; PySCF raises its own error for
+    those and it is surfaced unchanged.
+    """
+    try:
+        return mf.nuc_grad_method()
+    except Exception as exc:
+        raise ValueError(
+            f"analytic gradients are unavailable for {type(mf).__name__}: {exc}"
+        ) from exc
+
+
+def run_geometry_optimisation(params: dict) -> dict:
+    """Relax the molecular geometry and report the optimised coordinates."""
+    from . import geomopt
+
+    max_steps = max(1, min(int(params.get("maxSteps", 40)), 200))
+    conv_tol_grad = float(params.get("convTolGrad", 3e-4))
+    conv_tol_energy = float(params.get("convTolEnergy", 1e-6))
+    basis = str(params.get("basis", "sto-3g"))
+    method = str(params.get("method", "RHF")).upper()
+    xc = str(params.get("xc", "b3lyp"))
+    include = {str(x).lower() for x in params.get("include", [])}
+
+    base = {
+        "atoms": params["atoms"],
+        "basis": basis,
+        "charge": int(params.get("charge", 0)),
+        "spin": int(params.get("spin", 0)),
+        "method": method,
+        "xc": xc,
+        "unit": "Angstrom",
+    }
+    for key in ("maxCycle", "convTol", "initGuess"):
+        if params.get(key) is not None:
+            base[key] = params[key]
+
+    start = time.perf_counter()
+    call_log: list[str] = []
+    state = {"mf": None, "atoms": None}
+
+    def energy_and_grad(flat):
+        # PySCF takes and returns Bohr; the UI works in Angstrom.
+        coords = np.asarray(flat, dtype=float).reshape(-1, 3)
+        atoms = [
+            {"element": a["element"], "z": a["z"], "xyz": [float(v) for v in row]}
+            for a, row in zip(state["atoms"], coords)
+        ]
+        step_params = dict(base)
+        step_params["atoms"] = atoms
+        step_params["unit"] = "Bohr"
+        mf, built, _basis, _method, log = _run_mean_field(step_params)
+        if not mf.converged:
+            call_log.append("warning: an SCF cycle during the relaxation did not converge")
+        state["mf"] = mf
+        gradient = np.asarray(_gradient_method(mf).kernel(), dtype=float).reshape(-1)
+        return float(mf.e_tot), gradient
+
+    initial = _coerce_atoms(params["atoms"])
+    state["atoms"] = initial
+    # PySCF's mol.atom_coords() is in Bohr, and the gradient is Ha/Bohr, so the
+    # whole relaxation runs in Bohr and is converted back at the end.
+    reference = _build_mol(initial, basis, base["charge"], base["spin"], "Angstrom")
+    x0 = np.asarray(reference.atom_coords(), dtype=float).reshape(-1)
+
+    outcome = geomopt.minimise(
+        x0,
+        energy_and_grad,
+        max_steps=max_steps,
+        conv_tol_grad=conv_tol_grad,
+        conv_tol_energy=conv_tol_energy,
+    )
+    wall_ms = (time.perf_counter() - start) * 1000.0
+
+    final_coords = outcome["x"].reshape(-1, 3)
+    # geometry.describe expects Angstrom.
+    angstrom_atoms = [
+        {"element": a["element"], "z": a["z"],
+         "xyz": [float(v) * _BOHR_TO_ANGSTROM for v in row]}
+        for a, row in zip(initial, final_coords)
+    ]
+    optimised_spec = geometry.atoms_to_spec(angstrom_atoms)
+
+    mf = state["mf"]
+    result: dict[str, Any] = {
+        "ok": True,
+        "method": f"{method}/{basis}",
+        "functional": xc if method.endswith("KS") else None,
+        "converged": bool(outcome["converged"]),
+        "message": outcome["message"],
+        "steps": int(outcome["steps"]),
+        "maxSteps": max_steps,
+        "wallTimeMs": round(wall_ms, 3),
+        "energy": round(float(outcome["energy"]), 10),
+        "gradient": [round(float(v), 8) for v in np.asarray(outcome["gradient"]).ravel()],
+        "maxGradient": round(geomopt.max_abs(outcome["gradient"]), 8),
+        "rmsGradient": round(geomopt.rms(outcome["gradient"]), 8),
+        "convTolGrad": conv_tol_grad,
+        "optimisedAtoms": optimised_spec,
+        "atoms": [
+            {"element": a["element"], "z": a["z"], "xyz": [round(float(v), 8) for v in a["xyz"]]}
+            for a in angstrom_atoms
+        ],
+        "initialAtoms": geometry.atoms_to_spec(initial),
+        "trajectory": [
+            {
+                "step": point["step"],
+                "energy": round(point["energy"], 10),
+                "maxGrad": round(point["maxGrad"], 8),
+                "rmsGrad": round(point["rmsGrad"], 8),
+                "deltaE": None if point["deltaE"] is None else round(point["deltaE"], 10),
+            }
+            for point in outcome["trajectory"]
+        ],
+        "geometry": geometry.describe(angstrom_atoms),
+        "log": "\n".join(call_log)[-4000:],
+    }
+    if mf is not None:
+        result.update(_electronic_structure(mf, angstrom_atoms, include))
+    return result
+
+
 def analyse_geometry(params: dict) -> dict:
     atoms = _coerce_atoms(params["atoms"])
     return {"ok": True, **geometry.describe(atoms)}
@@ -554,6 +702,7 @@ def dispatch(method: str, params: dict) -> dict:
         "ccsd": run_ccsd,
         "bond_scan": run_bond_scan,
         "geometry": analyse_geometry,
+        "optimise": run_geometry_optimisation,
     }
     if method not in handlers:
         raise ValueError(f"unknown method: {method!r}")

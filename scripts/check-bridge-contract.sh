@@ -94,6 +94,11 @@ fixtures = {
     "ccsd": call("ccsd", {"atoms": WATER, "basis": "sto-3g", "reference": "RHF", "include": []}),
     "bond_scan": call("bond_scan", {"atoms": WATER, "i": 0, "j": 1, "method": "RHF",
                                     "basis": "sto-3g", "steps": 5, "start": 0.7, "stop": 1.5}),
+    # Geometry relaxation.  A stretched water so the relaxation actually has
+    # something to do and the payload carries a multi-step trajectory.
+    "optimise": call("optimise", {"atoms": "O 0 0 0; H 0 0 1.30; H 0 1.10 -0.30",
+                                  "method": "RKS", "xc": "b3lyp", "basis": "sto-3g",
+                                  "maxSteps": 30, "include": ["mo"]}),
     "error": call("scf", {"atoms": "Xx 0 0 0", "basis": "sto-3g"}),
 }
 

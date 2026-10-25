@@ -151,7 +151,7 @@ struct BuilderView: View {
             .pickerStyle(.segmented)
             Text(model.calculation.blurb).font(.caption2).foregroundStyle(.secondary)
 
-            if model.calculation == .dft {
+            if model.calculation.usesFunctional {
                 Picker(L("builder.functional"), selection: $model.functional) {
                     ForEach(model.capabilities?.functionals ?? [model.functional], id: \.self) { name in
                         Text(name).tag(name)
@@ -167,6 +167,11 @@ struct BuilderView: View {
 
             Stepper(LF("builder.charge", model.charge), value: $model.charge, in: -4...4)
             Stepper(LF("builder.spin", model.spin), value: $model.spin, in: 0...4)
+
+            if model.calculation == .optimise {
+                Stepper(LF("builder.maxSteps", model.maxOptimisationSteps),
+                        value: $model.maxOptimisationSteps, in: 5...100, step: 5)
+            }
 
             if model.calculation == .scf || model.calculation == .dft {
                 Toggle(L("builder.densityCube"), isOn: $model.wantGrid)

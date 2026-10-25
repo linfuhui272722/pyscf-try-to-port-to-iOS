@@ -177,6 +177,34 @@ struct PySCFEngine {
         }
     }
 
+    /// Relaxes the molecular geometry with analytic gradients.
+    ///
+    /// Every basis set in ``Capabilities.basisSets`` is supported, because the
+    /// gradient driver comes from the mean-field object itself.
+    func optimise(
+        atoms: String,
+        method: String = "RKS",
+        basis: String = "sto-3g",
+        xc: String = "b3lyp",
+        charge: Int = 0,
+        spin: Int = 0,
+        maxSteps: Int = 40,
+        include: [String] = []
+    ) async throws -> OptimisationResult {
+        try await run {
+            OptimisationResult(try call("optimise", [
+                "atoms": atoms,
+                "method": method,
+                "basis": basis,
+                "xc": xc,
+                "charge": charge,
+                "spin": spin,
+                "maxSteps": maxSteps,
+                "include": include,
+            ]))
+        }
+    }
+
     func bondScan(
         atoms: String,
         i: Int,

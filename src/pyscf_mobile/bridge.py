@@ -42,6 +42,7 @@ def capabilities() -> dict:
             "mp2",
             "ccsd",
             "bond_scan",
+            "optimise",
         ],
         "basisSets": list(engine.BASIS_SETS),
         "functionals": list(engine.FUNCTIONALS),

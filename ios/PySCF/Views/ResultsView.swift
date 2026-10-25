@@ -4,6 +4,7 @@
 // ladder, Mulliken charges, dipole, bond scan, and the engine log.
 
 import SwiftUI
+import UIKit
 
 struct ResultsView: View {
     @EnvironmentObject private var model: AppModel
@@ -11,6 +12,9 @@ struct ResultsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                if let optimisation = model.optimisation {
+                    optimisationPanel(optimisation)
+                }
                 if let result = model.result {
                     headline(result)
                     orbitalPanel(result)
@@ -20,7 +24,7 @@ struct ResultsView: View {
                         scanPanel(scan)
                     }
                     logPanel(result.log)
-                } else {
+                } else if model.optimisation == nil {
                     Panel(title: L("results.empty.title"), systemImage: "hourglass") {
                         Text(L("results.empty.body"))
                             .font(.callout)
@@ -35,6 +39,103 @@ struct ResultsView: View {
     }
 
     // MARK: - Panels
+
+    /// Geometry relaxation: headline numbers, the optimised coordinates with a
+    /// copy button, and the convergence trace.
+    private func optimisationPanel(_ optimisation: OptimisationResult) -> some View {
+        Panel(title: L("results.optimisation"), systemImage: "arrow.triangle.2.circlepath") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: optimisation.converged
+                          ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(optimisation.converged ? .green : .orange)
+                    Text(optimisation.converged
+                         ? L("results.optimisation.converged")
+                         : L("results.optimisation.notConverged"))
+                        .font(.callout.weight(.medium))
+                    Spacer()
+                    Text(LF("results.optimisation.steps", optimisation.steps,
+                            optimisation.maxSteps))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L("results.totalEnergy")).font(.caption).foregroundStyle(.secondary)
+                    Text(formatHartree(optimisation.energy))
+                        .font(.title3.monospacedDigit().bold())
+                        .textSelection(.enabled)
+                }
+
+                HStack(spacing: 16) {
+                    labelled(L("results.optimisation.maxGrad"),
+                             String(format: "%.2e", optimisation.maxGradient))
+                    labelled(L("results.optimisation.rmsGrad"),
+                             String(format: "%.2e", optimisation.rmsGradient))
+                    labelled(L("results.wallTime"),
+                             String(format: "%.1f s", optimisation.wallTimeMs / 1000))
+                }
+
+                Divider()
+
+                Text(L("results.optimisation.coordinates"))
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(optimisation.coordinates)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                    UIPasteboard.general.string = optimisation.coordinates
+                    model.noteCoordinatesCopied()
+                } label: {
+                    Label(L("results.optimisation.copy"), systemImage: "doc.on.doc")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    model.adoptOptimisedGeometry()
+                } label: {
+                    Label(L("results.optimisation.load"), systemImage: "arrow.down.doc")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+
+                if !optimisation.converged {
+                    Text(LF("results.optimisation.hint", optimisation.message))
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+
+                if optimisation.trajectory.count > 1 {
+                    Divider()
+                    Text(L("results.optimisation.trace"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(optimisation.trajectory) { point in
+                        HStack {
+                            Text("\(point.step)").font(.caption.monospacedDigit())
+                                .frame(width: 24, alignment: .trailing)
+                            Text(formatHartree(point.energy))
+                                .font(.caption.monospacedDigit())
+                            Spacer()
+                            Text(String(format: "|g| %.1e", point.maxGrad))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func labelled(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.callout.monospacedDigit())
+        }
+    }
 
     private func headline(_ result: ScfResult) -> some View {
         Panel(title: result.method, systemImage: "bolt.circle") {

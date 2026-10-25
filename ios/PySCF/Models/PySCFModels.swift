@@ -490,3 +490,68 @@ struct BondScanResult {
         }
     }
 }
+
+// MARK: - Geometry optimisation
+
+/// One relaxation step: the energy and gradient norm after that step.
+struct OptimisationStep: Identifiable, Hashable {
+    var step: Int
+    var energy: Double
+    var maxGrad: Double
+    var rmsGrad: Double
+    var deltaE: Double?
+
+    var id: Int { step }
+
+    init(_ json: JSONObject) {
+        step = json.integer("step") ?? 0
+        energy = json.number("energy") ?? 0
+        maxGrad = json.number("maxGrad") ?? 0
+        rmsGrad = json.number("rmsGrad") ?? 0
+        deltaE = json.number("deltaE")
+    }
+}
+
+/// Result of relaxing a molecular geometry.
+struct OptimisationResult {
+    var method: String
+    var functional: String?
+    var converged: Bool
+    var message: String
+    var steps: Int
+    var maxSteps: Int
+    var wallTimeMs: Double
+    var energy: Double
+    var maxGradient: Double
+    var rmsGradient: Double
+    var convTolGrad: Double
+    var initialAtoms: String
+    var optimisedAtoms: String
+    var geometry: GeometryDescription
+    var trajectory: [OptimisationStep]
+    var log: String
+
+    /// The optimised structure in the form the builder's atom field expects,
+    /// so the user can copy it straight back into the editor.
+    var coordinates: String { optimisedAtoms }
+
+    init(_ json: JSONObject) {
+        method = json.value("method") as String? ?? ""
+        functional = json.value("functional") as String?
+        converged = json.value("converged") as Bool? ?? false
+        message = json.value("message") as String? ?? ""
+        steps = json.integer("steps") ?? 0
+        maxSteps = json.integer("maxSteps") ?? 0
+        wallTimeMs = json.number("wallTimeMs") ?? 0
+        energy = json.number("energy") ?? 0
+        maxGradient = json.number("maxGradient") ?? 0
+        rmsGradient = json.number("rmsGradient") ?? 0
+        convTolGrad = json.number("convTolGrad") ?? 0
+        initialAtoms = json.value("initialAtoms") as String? ?? ""
+        optimisedAtoms = json.value("optimisedAtoms") as String? ?? ""
+        geometry = GeometryDescription(json.object("geometry") ?? JSONObject([:]))
+        trajectory = json.objects("trajectory").map(OptimisationStep.init)
+        log = json.value("log") as String? ?? ""
+    }
+}
+

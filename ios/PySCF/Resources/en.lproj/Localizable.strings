@@ -97,3 +97,17 @@
 "screen.orbitals" = "Orbitals";
 "screen.results" = "Results";
 "screen.table" = "Elements";
+"builder.maxSteps" = "Max relaxation steps";
+"busy.optimising" = "Optimising geometry (%@)…";
+"calc.optimise.blurb" = "Relax the geometry with analytic gradients";
+"results.optimisation" = "Geometry optimisation";
+"results.optimisation.converged" = "Converged";
+"results.optimisation.coordinates" = "Optimised coordinates (Å)";
+"results.optimisation.copy" = "Copy coordinates";
+"results.optimisation.hint" = "Last message: %@";
+"results.optimisation.load" = "Load into builder";
+"results.optimisation.maxGrad" = "max |grad|";
+"results.optimisation.notConverged" = "Not converged";
+"results.optimisation.rmsGrad" = "RMS |grad|";
+"results.optimisation.steps" = "%d / %d steps";
+"results.optimisation.trace" = "Convergence trace";

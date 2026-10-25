@@ -140,6 +140,14 @@ for relative in ["os.py", "inspect.py", "importlib/__init__.py",
                  "lib-dynload/_json.cpython-313-iphoneos.so",
                  "site-packages/pyscf_mobile/bridge.py",
                  "site-packages/pyscf_mobile/engine.py",
+                 # The geometry optimiser and the gradient drivers it calls.
+                 # PySCF's own geomopt solvers need the berny/geometric packages,
+                 # which cannot be cross-compiled, so the relaxation runs on
+                 # these modules instead.
+                 "site-packages/pyscf_mobile/geomopt.py",
+                 "site-packages/pyscf/grad/rhf.py",
+                 "site-packages/pyscf/grad/rks.py",
+                 "site-packages/pyscf/grad/__init__.py",
                  "site-packages/pyscf/__init__.py",
                  "site-packages/numpy/__init__.py"]:
     check(os.path.exists(os.path.join(libdir, relative)), f"payload has {relative}")

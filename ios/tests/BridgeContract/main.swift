@@ -173,6 +173,52 @@ do {
     expect(scan.label.contains("O"), "scan label names the bond (\(scan.label))")
 }
 
+print("optimise")
+do {
+    let optimisation = OptimisationResult(fixture("optimise"))
+    expect(optimisation.method.hasPrefix("RKS"), "method names the reference (\(optimisation.method))")
+    expect(optimisation.functional == "b3lyp", "functional reported (\(optimisation.functional ?? "nil"))")
+    expect(optimisation.converged, "relaxation converged")
+    expect(optimisation.steps > 0, "at least one relaxation step (\(optimisation.steps))")
+    expect(optimisation.maxGradient < optimisation.convTolGrad * 10,
+           "gradient reached the threshold (\(optimisation.maxGradient))")
+    expect(optimisation.trajectory.count == optimisation.steps + 1,
+           "trajectory covers every step (\(optimisation.trajectory.count))")
+
+    // The energy must drop along the trajectory, which is what makes the
+    // reported minimum believable.
+    let energies = optimisation.trajectory.map(\.energy)
+    expect(energies == energies.sorted(by: >), "energy decreases monotonically")
+
+    // The copy button ships `coordinates`; it must be the optimised structure
+    // in the same "Sym x y z; ..." form the builder's atom field accepts.
+    let coordinates = optimisation.coordinates
+    expect(!coordinates.isEmpty, "coordinates are present")
+    expect(coordinates.contains("O") && coordinates.contains("H"), "coordinates name the atoms")
+    let rows = coordinates.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+    expect(rows.count == 3, "three coordinate rows (\(rows.count))")
+    expect(rows.allSatisfy { $0.split(separator: " ").count == 4 },
+           "each row is 'Sym x y z'")
+    // Water must have relaxed from 1.30 A towards ~1.03 A.
+    if rows.count == 3 {
+        let oxygen = rows[0].split(separator: " ").dropFirst().compactMap { Double($0) }
+        let hydrogen = rows[1].split(separator: " ").dropFirst().compactMap { Double($0) }
+        if oxygen.count == 3 && hydrogen.count == 3 {
+            let dx = oxygen[0] - hydrogen[0]
+            let dy = oxygen[1] - hydrogen[1]
+            let dz = oxygen[2] - hydrogen[2]
+            let bond = (dx * dx + dy * dy + dz * dz).squareRoot()
+            expect(bond > 0.90 && bond < 1.15, "O-H relaxed to a physical length (\(bond))")
+        } else {
+            expect(false, "coordinate rows are numeric")
+        }
+    }
+
+    // The panel also shows the geometry block and the engine log.
+    expect(optimisation.geometry.bonds.count == 2, "two bonds reported")
+    expect(optimisation.geometry.angles.count == 1, "one valence angle reported")
+}
+
 print("error envelope")
 do {
     guard let errorJSON = rawFixture("error") else {

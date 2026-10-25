@@ -97,3 +97,17 @@
 "screen.orbitals" = "轨道";
 "screen.results" = "结果";
 "screen.table" = "元素";
+"builder.maxSteps" = "最大优化步数";
+"busy.optimising" = "正在优化几何结构（%@）…";
+"calc.optimise.blurb" = "使用解析梯度弛豫分子几何结构";
+"results.optimisation" = "几何优化";
+"results.optimisation.converged" = "已收敛";
+"results.optimisation.coordinates" = "优化后坐标（埃）";
+"results.optimisation.copy" = "复制坐标";
+"results.optimisation.hint" = "最后信息：%@";
+"results.optimisation.load" = "载入构建器";
+"results.optimisation.maxGrad" = "最大 |梯度|";
+"results.optimisation.notConverged" = "未收敛";
+"results.optimisation.rmsGrad" = "均方根 |梯度|";
+"results.optimisation.steps" = "%d / %d 步";
+"results.optimisation.trace" = "收敛过程";

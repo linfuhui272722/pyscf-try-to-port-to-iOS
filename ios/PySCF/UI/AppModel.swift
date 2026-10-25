@@ -11,15 +11,21 @@ import SwiftUI
 enum CalculationKind: String, CaseIterable, Identifiable {
     case scf = "SCF"
     case dft = "DFT"
+    case optimise = "OPT"
     case mp2 = "MP2"
     case ccsd = "CCSD"
 
     var id: String { rawValue }
 
+    /// Geometry relaxation runs on a Kohn-Sham reference, so it needs the
+    /// functional picker that DFT uses.
+    var usesFunctional: Bool { self == .dft || self == .optimise }
+
     var blurb: String {
         switch self {
         case .scf: return L("calc.scf.blurb")
         case .dft: return L("calc.dft.blurb")
+        case .optimise: return L("calc.optimise.blurb")
         case .mp2: return L("calc.mp2.blurb")
         case .ccsd: return L("calc.ccsd.blurb")
         }
@@ -68,6 +74,7 @@ final class AppModel: ObservableObject {
     @Published var wantGrid: Bool = true
     @Published var scanI: Int = 0
     @Published var scanJ: Int = 1
+    @Published var maxOptimisationSteps: Int = 40
 
     @Published var capabilities: Capabilities?
     @Published var catalog = PresetCatalog(JSONObject([:]))
@@ -75,6 +82,7 @@ final class AppModel: ObservableObject {
     @Published var geometry: GeometryDescription?
     @Published var result: ScfResult?
     @Published var scan: BondScanResult?
+    @Published var optimisation: OptimisationResult?
 
     @Published var isBusy = false
     @Published var busyLabel = ""
@@ -145,6 +153,7 @@ final class AppModel: ObservableObject {
         atomSpec = preset.atoms
         result = nil
         scan = nil
+        optimisation = nil
         Task { await refreshGeometry() }
     }
 
@@ -185,6 +194,13 @@ final class AppModel: ObservableObject {
                 output = try await engine.dft(
                     atoms: spec, functional: functional, basis: basis,
                     charge: charge, spin: spin, include: include)
+            case .optimise:
+                // Geometry relaxation returns its own payload (coordinates,
+                // trajectory) and its panel shows no orbital data, so it is
+                // handled before the shared ScfResult path and asks for nothing
+                // extra.
+                await runOptimisation()
+                return
             case .mp2:
                 output = try await engine.mp2(
                     atoms: spec, reference: spin > 0 ? "ROHF" : "RHF",
@@ -196,6 +212,7 @@ final class AppModel: ObservableObject {
             }
             result = output
             scan = nil
+            optimisation = nil
             logText = output.log
             screen = .results
             log("\(output.method): E = \(String(format: "%.8f", output.energy)) Ha "
@@ -219,6 +236,7 @@ final class AppModel: ObservableObject {
                 atoms: atomSpec, i: scanI, j: scanJ,
                 method: spin > 0 ? "ROHF" : "RHF", basis: basis)
             scan = output
+            optimisation = nil
             screen = .results
             if let r = output.minimumR, let e = output.minimumEnergy {
                 log("\(output.label) scan: minimum at \(String(format: "%.3f", r)) Å, "
@@ -227,6 +245,51 @@ final class AppModel: ObservableObject {
         } catch {
             report(error)
         }
+    }
+
+    /// Relaxes the geometry and, on success, leaves the optimised structure in
+    /// the builder so the user can copy it out or run a single point on it.
+    func runOptimisation(include: [String] = []) async {
+        isBusy = true
+        busyLabel = LF("busy.optimising", basis)
+        errorMessage = nil
+        defer { isBusy = false }
+        do {
+            let output = try await engine.optimise(
+                atoms: atomSpec, method: "RKS", basis: basis, xc: functional,
+                charge: charge, spin: spin, maxSteps: maxOptimisationSteps,
+                include: include)
+            optimisation = output
+            scan = nil
+            logText = output.log
+            screen = .results
+            log("\(output.method): optimised in \(output.steps) steps, "
+                + "E = \(String(format: "%.8f", output.energy)) Ha, "
+                + "max|grad| = \(String(format: "%.2e", output.maxGradient))")
+            if output.converged {
+                log("optimised geometry: \(output.optimisedAtoms)")
+            } else {
+                log("warning: relaxation did not converge — \(output.message)")
+            }
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Puts the optimised coordinates back into the builder's atom field.
+    func adoptOptimisedGeometry() {
+        guard let output = optimisation else { return }
+        atomSpec = output.optimisedAtoms
+        result = nil
+        scan = nil
+        Task { await refreshGeometry() }
+        log("loaded the optimised geometry into the builder")
+    }
+
+    /// Records in the log that the coordinates reached the clipboard, so the
+    /// action is visible even though the pasteboard is silent.
+    func noteCoordinatesCopied() {
+        log("optimised coordinates copied to the clipboard")
     }
 
     // MARK: - Helpers
