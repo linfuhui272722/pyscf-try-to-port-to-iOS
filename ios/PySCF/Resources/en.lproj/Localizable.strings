@@ -58,6 +58,8 @@
 "engine.online" = "Engine online";
 "engine.protocol" = "protocol v%d · package %@";
 "engine.starting" = "Starting engine…";
+"engine.threads" = "OpenMP · %d thread(s)";
+"engine.threadsUnknown" = "OpenMP thread count unavailable (%@)";
 "engine.unavailable" = "Engine unavailable";
 "engine.versions" = "PySCF %@ · NumPy %@";
 "orbitals.empty.body" = "Run an SCF or DFT calculation to populate the orbital ladder.";

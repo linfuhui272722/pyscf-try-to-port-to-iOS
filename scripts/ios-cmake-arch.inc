@@ -25,9 +25,35 @@ set(LAPACK_LIBRARIES "-framework Accelerate" CACHE STRING "" FORCE)
 # ---------------------------------------------------------------------------
 # OpenMP
 # ---------------------------------------------------------------------------
-# The iOS SDK ships no libomp, so find_package(OpenMP) would fail and PySCF
-# would fall back to serial loops anyway.  Disabling it keeps the build quiet.
-set(ENABLE_OPENMP OFF CACHE BOOL "" FORCE)
+# PySCF enables OpenMP whenever find_package(OpenMP) succeeds, but that module
+# decides by compiling and *running* a probe program, which cannot work while
+# cross-compiling.  The probe is skipped when the result variables are already
+# defined, so the answers are supplied here directly: -fopenmp for the compiler,
+# and the libomp built by scripts/build-libomp-ios.sh for the link.
+#
+# Both languages need answering.  The project enables C and CXX, and
+# find_package(OpenMP) reports OpenMP_FOUND only when *every* loaded language
+# was found, so supplying the C variables alone leaves OpenMP_FOUND false and
+# PySCF silently builds serial code.
+#
+# OpenMP_C_INCLUDE_DIR matters as much as the library: clang's own resource
+# directory has no omp.h, so `#include <omp.h>` only resolves through the -I
+# this adds.
+if(EXISTS "${IOS_DEPS_PREFIX}/lib/libomp.so")
+  foreach(_omp_lang C CXX)
+    set(OpenMP_${_omp_lang}_FLAGS "-fopenmp" CACHE STRING "" FORCE)
+    set(OpenMP_${_omp_lang}_LIB_NAMES "omp" CACHE STRING "" FORCE)
+    set(OpenMP_omp_LIBRARY "${IOS_DEPS_PREFIX}/lib/libomp.so" CACHE FILEPATH "" FORCE)
+    set(OpenMP_${_omp_lang}_INCLUDE_DIR "${IOS_DEPS_PREFIX}/include" CACHE PATH "" FORCE)
+  endforeach()
+  set(ENABLE_OPENMP ON CACHE BOOL "" FORCE)
+  # PySCF's subdirectories add their own include_directories() when they are
+  # processed, which come *before* the ones this file sets, so omp.h has to be
+  # registered here rather than relying on the OpenMP target's interface.
+  include_directories("${IOS_DEPS_PREFIX}/include")
+else()
+  set(ENABLE_OPENMP OFF CACHE BOOL "" FORCE)
+endif()
 
 # ---------------------------------------------------------------------------
 # Pre-built libcint / libxc

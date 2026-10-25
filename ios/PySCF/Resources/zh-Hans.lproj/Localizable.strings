@@ -58,6 +58,8 @@
 "engine.online" = "引擎在线";
 "engine.protocol" = "协议 v%d · 软件包 %@";
 "engine.starting" = "正在启动引擎…";
+"engine.threads" = "OpenMP · %d 线程";
+"engine.threadsUnknown" = "无法获取 OpenMP 线程数（%@）";
 "engine.unavailable" = "引擎不可用";
 "engine.versions" = "PySCF %@ · NumPy %@";
 "orbitals.empty.body" = "运行 SCF 或 DFT 计算以填充轨道能级图。";

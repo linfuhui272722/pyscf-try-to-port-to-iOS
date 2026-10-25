@@ -222,19 +222,38 @@ def engine_status() -> dict:
     libs: dict[str, Any] = {}
     from pyscf import lib as _lib
 
-    for name in ("libcgto", "libdft", "libnp_helper"):
+    # libomp is probed alongside the PySCF extensions because it is the one
+    # dependency that is not built by PySCF's own CMake: if it failed to load,
+    # every extension would fail too, and reporting it separately names the
+    # cause instead of leaving three identical "not found" entries.
+    for name in ("libcgto", "libdft", "libnp_helper", "libomp"):
         try:
             _lib.load_library(name)
             libs[name] = True
         except Exception as exc:  # pragma: no cover
             libs[name] = False
             libs[f"{name}_error"] = str(exc)
+
+    # The thread count is reported because it is the only way to tell from the
+    # device whether OpenMP actually took effect.  Nothing on the build host can
+    # observe it: the runtime is linked and the symbols are present either way,
+    # and a serial build reports 1 here.  A failure is not fatal, so it is
+    # reported alongside rather than raised.
+    threads: int | None = None
+    threads_error: str | None = None
+    try:
+        threads = int(_lib.num_threads())
+    except Exception as exc:  # pragma: no cover
+        threads_error = f"{type(exc).__name__}: {exc}"
+
     return {
         "available": True,
         "error": None,
         "version": getattr(pyscf, "__version__", "unknown"),
         "numpy": getattr(np, "__version__", "unknown"),
         "libraries": libs,
+        "threads": threads,
+        "threadsError": threads_error,
     }
 
 

@@ -165,6 +165,10 @@ struct EngineStatus {
     var version: String
     var numpyVersion: String
     var libraries: [String: Bool]
+    /// Worker threads PySCF will use. 1 means the build is serial; the UI shows
+    /// it so OpenMP can be confirmed on device, where the build host cannot.
+    var threads: Int?
+    var threadsError: String?
 
     init(_ json: JSONObject) {
         available = json.value("available") as Bool? ?? false
@@ -173,6 +177,8 @@ struct EngineStatus {
         version = json.value("version") as String? ?? "unknown"
         numpyVersion = json.value("numpy") as String? ?? "unknown"
         libraries = json.boolMap("libraries")
+        threads = json.integer("threads")
+        threadsError = json.value("threadsError") as String?
     }
 }
 

@@ -63,6 +63,12 @@ struct RootView: View {
                 .foregroundStyle(caps.engine.available ? Color.green : Color.red)
                 Text(LF("engine.versions", caps.engine.version, caps.engine.numpyVersion))
                 Text(LF("engine.protocol", caps.protocolVersion, caps.packageVersion))
+                if let threads = caps.engine.threads {
+                    Text(LF("engine.threads", threads))
+                } else if let reason = caps.engine.threadsError {
+                    Text(LF("engine.threadsUnknown", reason))
+                        .foregroundStyle(.orange)
+                }
                 if !caps.engine.available {
                     // Show why, rather than only that it failed. On a device this
                     // footer is often the only feedback available.

@@ -24,6 +24,7 @@ fresh clone only needs network access on the first run.
 scripts/setup-ios-toolchain.sh   # iOS SDK 15.6 + Darwin cross-toolchain
 scripts/fetch-swift-ios.sh       # Linux Swift 5.6 toolchain (with ld64.lld)
 scripts/build-numpy-ios.sh       # NumPy wheel for arm64 iOS
+scripts/build-libomp-ios.sh      # OpenMP runtime (libomp) for arm64 iOS
 scripts/build-pyscf-ios.sh       # PySCF + libcint/libxc + native ext
 scripts/build-ios-app.sh         # assemble PySCF.app
 ```
@@ -35,6 +36,7 @@ Downloads are pinned and checksum-verified:
 | iPhoneOS15.6.sdk | `theos/sdks` release `master-146e41f` | `build/sdk/` |
 | Darwin toolchain | `L1ghtmann/llvm-project` release `test-210562a` | `build/toolchain/` |
 | Swift 5.6 | `download.swift.org` ubuntu20.04 release | `build/swift/` |
+| libomp | `llvm/llvm-project` commit `1fdec59b` (`llvmorg-11.1.0`) | `build/src/llvm-openmp-11.1.0/` |
 
 Pin new versions by updating the URL *and* the matching `*_SHA256` default in
 the script; an unpinned `latest` URL would silently change the bytes and
@@ -162,6 +164,47 @@ newer LLD 17 refuses iOS outright. Keep LLD 13 for linking.
 `install_name_tool` in that toolchain is a no-op — it exits successfully without
 modifying anything. Load commands must therefore be produced correctly at link
 time; post-processing a binary is not an option.
+
+**`find_package(OpenMP)` must be answered, not probed.** The module decides by
+compiling *and running* a program, so while cross-compiling it always fails and
+PySCF quietly builds serial code — the build succeeds, the library is correct,
+and the only symptom is that one core is used. `ios-cmake-arch.inc` pre-defines
+`OpenMP_<lang>_FLAGS`, `OpenMP_<lang>_LIB_NAMES`, `OpenMP_omp_LIBRARY` and
+`OpenMP_<lang>_INCLUDE_DIR`; when those are already set, the module skips its
+probe and reports success. It must be done for **both** C and CXX: the project
+enables both languages, and `OpenMP_FOUND` is only true when *every* loaded
+language was found. Answering C alone leaves it false, which looks exactly like
+OpenMP not being wired up at all. Confirm with `Found OpenMP: TRUE` in
+`build/logs/pyscf-configure.log`, then check that the extensions really
+reference `___kmpc_fork_call` — `config.h` only switches on `_OPENMP`, so it
+cannot tell you whether the flag reached the compile line.
+
+**libomp needs two source patches, both carried in the build script.** LLVM
+11.1.0 is pinned deliberately: libomp and clang must agree on the ABI the
+compiler emits for `#pragma omp`, so the runtime is built from the same release
+as the cross-toolchain's clang. Two things then break on iOS:
+
+* `z_Linux_asm.S` emits `.size` in the AARCH64 critical-section block. That is
+  an ELF directive and the Mach-O assembler rejects the whole file, so the
+  library never links. The Darwin branch needs the underscored symbol and no
+  `.size`. This one only shows up at link time, after every C++ file has
+  compiled.
+* `kmp_atomic.cpp` calls `__divdc3`/`__divsc3`. Those live in compiler-rt,
+  which iOS does not ship, and `ld64.lld` will not resolve them out of
+  libSystem's `.tbd` even though it lists them. The two canonical
+  implementations are compiled into libomp instead.
+
+Do not "clean up" the guard on the first patch to a simple grep for the
+underscored symbol: the x86 Darwin block already defines it, so that test
+matches on the unpatched file and the patch is silently skipped.
+
+**libomp is a `.so`, not a `.dylib`.** `ios-cmake-project-include.cmake`
+overrides the shared-library suffix for *every* target, including this one, so
+CMake links `libomp.so`. PySCF links it by absolute path rather than `-lomp`
+(so the OpenMP target carries the location), and the extension modules already
+have an `@loader_path` rpath, which is what lets `@rpath/libomp.so` resolve once
+it is copied beside them. Name it `libomp.dylib` anywhere in this pipeline and
+the link will succeed while every import fails at runtime.
 
 **`-lPython` and the framework modulemap.** `Python.framework`'s modulemap
 contains `link "Python"`, so Swift autolinking emits `-lPython`. ld64 would find

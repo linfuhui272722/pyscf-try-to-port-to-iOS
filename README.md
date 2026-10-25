@@ -54,6 +54,7 @@ toolchain, and about 8 GB of free disk.
 scripts/setup-ios-toolchain.sh   # iPhoneOS 15.6 SDK + Darwin cross-toolchain
 scripts/fetch-swift-ios.sh       # Swift 5.6 for Linux (provides ld64.lld)
 scripts/build-numpy-ios.sh       # NumPy for arm64 iOS
+scripts/build-libomp-ios.sh      # OpenMP runtime (libomp) for arm64 iOS
 scripts/build-pyscf-ios.sh       # PySCF + libcint + libxc + native ext
 scripts/build-ios-app.sh         # assemble PySCF.app
 ```
@@ -66,6 +67,7 @@ specific releases and checksum-verified:
 | iPhoneOS15.6.sdk | `theos/sdks` | `master-146e41f` |
 | Darwin toolchain | `L1ghtmann/llvm-project` | `test-210562a` |
 | Swift 5.6 | `download.swift.org` | `swift-5.6-RELEASE` |
+| libomp | `llvm/llvm-project` | `llvmorg-11.1.0` |
 
 The result is `build/products/ios-arm64/PySCF.app` — arm64, iOS 15.6 minimum,
 ad-hoc signed.
@@ -92,6 +94,12 @@ Apple's toolchain cannot run on Linux, so this uses open-source replacements:
   link for iOS at all.
 * **SDK** — theos' mirror of the iPhoneOS 15.6 SDK, providing headers, `.tbd`
   stubs and Swift interfaces.
+* **OpenMP runtime** — `libomp` built from LLVM 11.1.0, the release the
+  cross-toolchain's clang came from. The iOS SDK ships no OpenMP runtime, so
+  `find_package(OpenMP)` cannot succeed on its own and PySCF would build serial
+  code; `scripts/build-libomp-ios.sh` builds the runtime and
+  `scripts/ios-cmake-arch.inc` answers CMake's probe directly, since that probe
+  compiles *and runs* a program, which cross-compilation forbids.
 
 `install_name_tool` in that toolchain is a no-op — it exits zero without
 modifying anything. Load commands must therefore be correct at link time; a

@@ -10,6 +10,7 @@
 # Prerequisites (produced by the other scripts in this directory):
 #   build/products/ios-arm64/deps/lib/libcint.so   scripts/build-libcint-ios.sh
 #   build/products/ios-arm64/deps/lib/libxc.so     scripts/build-libxc-ios.sh
+#   build/products/ios-arm64/deps/lib/libomp.so    scripts/build-libomp-ios.sh
 #   build/cross-venv                                scripts/make-cross-venv.sh
 #
 # Output:
@@ -32,9 +33,9 @@ if [[ ! -d "$SRC" ]]; then
   echo "   run scripts/fetch-sources.sh first"
   exit 1
 fi
-for lib in libcint.so libxc.so; do
+for lib in libcint.so libxc.so libomp.so; do
   if [[ ! -f "$DEPS/lib/$lib" ]]; then
-    echo ">> missing $DEPS/lib/$lib - build libcint/libxc first" >&2
+    echo ">> missing $DEPS/lib/$lib - build libcint/libxc/libomp first" >&2
     exit 1
   fi
 done
@@ -110,9 +111,11 @@ done
 cp "$SRC"/pyscf/lib/lib*.so "$STAGE/pyscf/lib/"
 rm -f "$STAGE/pyscf/lib/"*.dylib
 
-# libcint and libxc are dependencies of the extensions and are loaded by the
-# same loader, so they belong in the same directory.
-cp "$DEPS/lib/libcint.so" "$DEPS/lib/libxc.so" "$STAGE/pyscf/lib/"
+# libcint, libxc and libomp are dependencies of the extensions and are loaded
+# by the same loader, so they belong in the same directory.  libomp is the
+# OpenMP runtime the extensions link against; without it beside them, dyld
+# cannot resolve `@rpath/libomp.so` and every import fails.
+cp "$DEPS/lib/libcint.so" "$DEPS/lib/libxc.so" "$DEPS/lib/libomp.so" "$STAGE/pyscf/lib/"
 for f in "$DEPS/lib/"libcint.*.so "$DEPS/lib/"libxc.*.so; do
   [[ -e "$f" ]] && cp "$f" "$STAGE/pyscf/lib/"
 done
