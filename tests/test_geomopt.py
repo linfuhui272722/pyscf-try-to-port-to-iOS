@@ -303,3 +303,65 @@ def run_all() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(run_all())
+
+
+def test_relaxation_grid_does_not_change_the_minimum():
+    """The cheap relaxation grid must land on the production-grid minimum.
+
+    The XC quadrature dominates a Kohn-Sham relaxation, so the engine relaxes on
+    a coarse grid and re-evaluates the final structure on the production grid.
+    This asserts that shortcut is free: same energy, same geometry.
+    """
+    params = {"atoms": _water_stretched(), "method": "RKS", "xc": "b3lyp",
+              "basis": "sto-3g", "maxSteps": 30}
+    cheap = engine.run_geometry_optimisation(params)
+    full = engine.run_geometry_optimisation({**params, "relaxGridLevel": 3,
+                                             "gridLevel": 3})
+    assert cheap["converged"] and full["converged"]
+    assert abs(cheap["energy"] - full["energy"]) < 1e-6, (
+        cheap["energy"], full["energy"])
+    cheap_xyz = np.array([a["xyz"] for a in cheap["atoms"]])
+    full_xyz = np.array([a["xyz"] for a in full["atoms"]])
+    assert float(np.abs(cheap_xyz - full_xyz).max()) < 1e-3
+
+
+def test_relaxation_grid_is_reported_and_bounded():
+    """The payload names both grids so the UI can say which one it used."""
+    result = engine.run_geometry_optimisation(
+        {"atoms": _water_stretched(), "method": "RKS", "xc": "b3lyp",
+         "basis": "sto-3g", "maxSteps": 30}
+    )
+    assert result["gridLevel"] is not None
+    assert result["relaxGridLevel"] is not None
+    assert result["relaxGridLevel"] <= result["gridLevel"]
+
+    # Hartree-Fock has no quadrature, so neither grid is reported.
+    hf = engine.run_geometry_optimisation(
+        {"atoms": _water_stretched(), "method": "RHF", "basis": "sto-3g",
+         "maxSteps": 30}
+    )
+    assert hf["gridLevel"] is None
+    assert hf["relaxGridLevel"] is None
+
+
+def test_reported_energy_uses_the_production_grid():
+    """The energy the user sees must not be the coarse one.
+
+    Relaxing on a coarse grid changes the energy by several kcal/mol, so a
+    payload that reported the cheap number would be visibly wrong.  Comparing
+    against an explicit production-grid single point catches that.
+    """
+    from pyscf import dft, gto
+
+    result = engine.run_geometry_optimisation(
+        {"atoms": _water_stretched(), "method": "RKS", "xc": "b3lyp",
+         "basis": "sto-3g", "maxSteps": 30}
+    )
+    coords = np.array([a["xyz"] for a in result["atoms"]])
+    check = dft.RKS(gto.M(
+        atom=[("O", coords[0]), ("H", coords[1]), ("H", coords[2])],
+        basis="sto-3g", verbose=0))
+    check.xc = "b3lyp"
+    check.kernel()
+    assert abs(result["energy"] - float(check.e_tot)) < 1e-7, (
+        result["energy"], float(check.e_tot))

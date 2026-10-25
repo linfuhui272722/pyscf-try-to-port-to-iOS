@@ -189,19 +189,26 @@ struct PySCFEngine {
         charge: Int = 0,
         spin: Int = 0,
         maxSteps: Int = 40,
+        gridLevel: Int? = nil,
+        relaxGridLevel: Int? = nil,
         include: [String] = []
     ) async throws -> OptimisationResult {
-        try await run {
-            OptimisationResult(try call("optimise", [
-                "atoms": atoms,
-                "method": method,
-                "basis": basis,
-                "xc": xc,
-                "charge": charge,
-                "spin": spin,
-                "maxSteps": maxSteps,
-                "include": include,
-            ]))
+        var payload: [String: Any] = [
+            "atoms": atoms,
+            "method": method,
+            "basis": basis,
+            "xc": xc,
+            "charge": charge,
+            "spin": spin,
+            "maxSteps": maxSteps,
+            "include": include,
+        ]
+        // Left out when nil so the engine keeps its own default, which is the
+        // coarse relaxation grid plus a production-grid refinement.
+        if let level = gridLevel { payload["gridLevel"] = level }
+        if let relax = relaxGridLevel { payload["relaxGridLevel"] = relax }
+        return try await run {
+            OptimisationResult(try call("optimise", payload))
         }
     }
 

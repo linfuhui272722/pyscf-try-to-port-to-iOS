@@ -171,6 +171,14 @@ struct BuilderView: View {
             if model.calculation == .optimise {
                 Stepper(LF("builder.maxSteps", model.maxOptimisationSteps),
                         value: $model.maxOptimisationSteps, in: 5...100, step: 5)
+                Picker(L("builder.accuracy"), selection: $model.relaxationAccuracy) {
+                    ForEach(RelaxationAccuracy.allCases) { accuracy in
+                        Text(accuracy.label).tag(accuracy)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(model.relaxationAccuracy.blurb)
+                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             if model.calculation == .scf || model.calculation == .dft {

@@ -98,6 +98,13 @@
 "screen.results" = "Results";
 "screen.table" = "Elements";
 "builder.maxSteps" = "Max relaxation steps";
+"builder.accuracy" = "Relaxation accuracy";
+"accuracy.fast" = "Fast";
+"accuracy.balanced" = "Balanced";
+"accuracy.precise" = "Precise";
+"accuracy.fast.blurb" = "Coarsest grid while relaxing. Quickest, and the reported energy is still taken from the production grid.";
+"accuracy.balanced.blurb" = "A coarse grid while relaxing, then the production grid for the reported energy. Good default.";
+"accuracy.precise.blurb" = "Production grid throughout, and a denser grid for the reported energy. Slowest, for final numbers.";
 "busy.optimising" = "Optimising geometry (%@)…";
 "calc.optimise.blurb" = "Relax the geometry with analytic gradients";
 "results.optimisation" = "Geometry optimisation";

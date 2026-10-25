@@ -32,6 +32,58 @@ enum CalculationKind: String, CaseIterable, Identifiable {
     }
 }
 
+/// How hard the geometry relaxation works per step.
+///
+/// The XC quadrature dominates the cost of a Kohn-Sham relaxation, and a coarse
+/// grid moves the nuclei to the same place for a fraction of the time. The
+/// engine always re-evaluates the final structure on the production grid, so
+/// these settings trade only relaxation time against how tightly the surface is
+/// followed, never the accuracy of the reported energy.
+enum RelaxationAccuracy: String, CaseIterable, Identifiable {
+    case fast
+    case balanced
+    case precise
+
+    var id: String { rawValue }
+
+    /// Grid used while the nuclei move. `nil` lets the engine pick.
+    var relaxGridLevel: Int? {
+        switch self {
+        case .fast: return 0
+        case .balanced: return nil
+        case .precise: return nil
+        }
+    }
+
+    /// Grid used for the reported single point. `nil` keeps the PySCF default.
+    var gridLevel: Int? {
+        switch self {
+        case .fast, .balanced: return nil
+        case .precise: return 4
+        }
+    }
+
+    /// Set on the precise setting, where the relaxation must not use the cheap
+    /// grid at all.
+    var forcesProductionGrid: Bool { self == .precise }
+
+    var blurb: String {
+        switch self {
+        case .fast: return L("accuracy.fast.blurb")
+        case .balanced: return L("accuracy.balanced.blurb")
+        case .precise: return L("accuracy.precise.blurb")
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .fast: return L("accuracy.fast")
+        case .balanced: return L("accuracy.balanced")
+        case .precise: return L("accuracy.precise")
+        }
+    }
+}
+
 /// Navigation destinations for the iPad/iPhone split view.
 enum Screen: String, CaseIterable, Identifiable {
     case builder = "Builder"
@@ -75,6 +127,7 @@ final class AppModel: ObservableObject {
     @Published var scanI: Int = 0
     @Published var scanJ: Int = 1
     @Published var maxOptimisationSteps: Int = 40
+    @Published var relaxationAccuracy: RelaxationAccuracy = .balanced
 
     @Published var capabilities: Capabilities?
     @Published var catalog = PresetCatalog(JSONObject([:]))
@@ -258,6 +311,9 @@ final class AppModel: ObservableObject {
             let output = try await engine.optimise(
                 atoms: atomSpec, method: "RKS", basis: basis, xc: functional,
                 charge: charge, spin: spin, maxSteps: maxOptimisationSteps,
+                gridLevel: relaxationAccuracy.gridLevel,
+                relaxGridLevel: relaxationAccuracy.forcesProductionGrid
+                    ? relaxationAccuracy.gridLevel : relaxationAccuracy.relaxGridLevel,
                 include: include)
             optimisation = output
             scan = nil

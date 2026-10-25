@@ -525,6 +525,8 @@ struct OptimisationResult {
     var maxGradient: Double
     var rmsGradient: Double
     var convTolGrad: Double
+    var gridLevel: Int?
+    var relaxGridLevel: Int?
     var initialAtoms: String
     var optimisedAtoms: String
     var geometry: GeometryDescription
@@ -547,6 +549,8 @@ struct OptimisationResult {
         maxGradient = json.number("maxGradient") ?? 0
         rmsGradient = json.number("rmsGradient") ?? 0
         convTolGrad = json.number("convTolGrad") ?? 0
+        gridLevel = json.integer("gridLevel")
+        relaxGridLevel = json.integer("relaxGridLevel")
         initialAtoms = json.value("initialAtoms") as String? ?? ""
         optimisedAtoms = json.value("optimisedAtoms") as String? ?? ""
         geometry = GeometryDescription(json.object("geometry") ?? JSONObject([:]))

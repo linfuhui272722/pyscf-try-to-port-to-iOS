@@ -382,6 +382,9 @@ def _make_method(mol, method: str, xc: str, params: dict):
         mf.conv_tol = float(params["convTol"])
     if params.get("initGuess"):
         mf.init_guess = str(params["initGuess"])
+    level = params.get("gridLevel")
+    if level is not None and hasattr(mf, "grids"):
+        mf.grids.level = int(level)
     return mf
 
 
@@ -429,12 +432,16 @@ def _electronic_structure(mf, atoms, include) -> dict:
     return result
 
 
-def _run_mean_field(params: dict):
+def _run_mean_field(params: dict, dm0=None):
     """Build the molecule and converge the requested mean field.
 
     Returns ``(mf, atoms, basis, method, log)``.  Shared by ``run_scf`` and the
     geometry optimiser, which needs the converged object to reach its gradient
     method.
+
+    ``dm0`` seeds the SCF with a density matrix from a previous geometry.  The
+    atom-centred basis does not change when the nuclei move, so the matrix stays
+    dimensionally valid and a relaxation can walk the surface reusing it.
     """
     _require_pyscf()
     atoms = _coerce_atoms(params["atoms"])
@@ -447,7 +454,7 @@ def _run_mean_field(params: dict):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         mf = _make_method(mol, method, xc, params)
-        mf.kernel()
+        mf.kernel(dm0=dm0)
     return mf, atoms, basis, method, buf.getvalue()
 
 
@@ -586,9 +593,25 @@ def run_geometry_optimisation(params: dict) -> dict:
         if params.get(key) is not None:
             base[key] = params[key]
 
+    # A relaxation walks a sequence of very similar geometries, and the XC
+    # quadrature dominates every step for a Kohn-Sham reference.  Evaluating the
+    # forces on a coarser grid is far cheaper and moves the nuclei to the same
+    # place; the reported energy is then taken from a single point on the
+    # production grid, so the number that reaches the user is not the cheap one.
+    # Hartree-Fock has no quadrature, so this only applies to the KS methods.
+    is_dft = method.endswith("KS")
+    production_level = int(params["gridLevel"]) if params.get("gridLevel") is not None else None
+    if production_level is None:
+        production_level = 3
+    relax_level = int(params["relaxGridLevel"]) if params.get("relaxGridLevel") is not None else None
+    if relax_level is None:
+        relax_level = 1 if is_dft else None
+    if relax_level is not None:
+        relax_level = max(0, min(relax_level, production_level))
+
     start = time.perf_counter()
     call_log: list[str] = []
-    state = {"mf": None, "atoms": None}
+    state = {"mf": None, "atoms": None, "dm": None}
 
     def energy_and_grad(flat):
         # PySCF takes and returns Bohr; the UI works in Angstrom.
@@ -600,10 +623,15 @@ def run_geometry_optimisation(params: dict) -> dict:
         step_params = dict(base)
         step_params["atoms"] = atoms
         step_params["unit"] = "Bohr"
-        mf, built, _basis, _method, log = _run_mean_field(step_params)
+        if relax_level is not None:
+            step_params["gridLevel"] = relax_level
+        # Seeding each step with the previous density matrix keeps the atom
+        # basis fixed, so the matrix stays valid across the relaxation.
+        mf, built, _basis, _method, log = _run_mean_field(step_params, dm0=state["dm"])
         if not mf.converged:
             call_log.append("warning: an SCF cycle during the relaxation did not converge")
         state["mf"] = mf
+        state["dm"] = mf.make_rdm1()
         gradient = np.asarray(_gradient_method(mf).kernel(), dtype=float).reshape(-1)
         return float(mf.e_tot), gradient
 
@@ -623,6 +651,27 @@ def run_geometry_optimisation(params: dict) -> dict:
     )
     wall_ms = (time.perf_counter() - start) * 1000.0
 
+    # The relaxation grid is deliberately coarse, so re-evaluate the converged
+    # geometry on the production grid.  This is what makes the reported energy
+    # and gradient trustworthy while the relaxation stays cheap.
+    refined = None
+    if is_dft and relax_level is not None and relax_level != production_level:
+        relaxed_coords = np.asarray(outcome["x"], dtype=float).reshape(-1, 3)
+        relaxed_atoms = [
+            {"element": a["element"], "z": a["z"], "xyz": [float(v) for v in row]}
+            for a, row in zip(initial, relaxed_coords)
+        ]
+        refine_params = dict(base)
+        refine_params["atoms"] = relaxed_atoms
+        refine_params["unit"] = "Bohr"
+        refine_params["gridLevel"] = production_level
+        mf, _b, _ba, _m, refine_log = _run_mean_field(refine_params, dm0=state["dm"])
+        if refine_log.strip():
+            call_log.append(refine_log.strip())
+        gradient = np.asarray(_gradient_method(mf).kernel(), dtype=float).reshape(-1)
+        state["mf"] = mf
+        refined = (float(mf.e_tot), gradient)
+
     final_coords = outcome["x"].reshape(-1, 3)
     # geometry.describe expects Angstrom.
     angstrom_atoms = [
@@ -633,6 +682,10 @@ def run_geometry_optimisation(params: dict) -> dict:
     optimised_spec = geometry.atoms_to_spec(angstrom_atoms)
 
     mf = state["mf"]
+    reported_energy = float(outcome["energy"])
+    reported_gradient = np.asarray(outcome["gradient"]).ravel()
+    if refined is not None:
+        reported_energy, reported_gradient = refined
     result: dict[str, Any] = {
         "ok": True,
         "method": f"{method}/{basis}",
@@ -642,11 +695,13 @@ def run_geometry_optimisation(params: dict) -> dict:
         "steps": int(outcome["steps"]),
         "maxSteps": max_steps,
         "wallTimeMs": round(wall_ms, 3),
-        "energy": round(float(outcome["energy"]), 10),
-        "gradient": [round(float(v), 8) for v in np.asarray(outcome["gradient"]).ravel()],
-        "maxGradient": round(geomopt.max_abs(outcome["gradient"]), 8),
-        "rmsGradient": round(geomopt.rms(outcome["gradient"]), 8),
+        "energy": round(reported_energy, 10),
+        "gradient": [round(float(v), 8) for v in reported_gradient],
+        "maxGradient": round(geomopt.max_abs(reported_gradient), 8),
+        "rmsGradient": round(geomopt.rms(reported_gradient), 8),
         "convTolGrad": conv_tol_grad,
+        "gridLevel": production_level if is_dft else None,
+        "relaxGridLevel": relax_level if is_dft else None,
         "optimisedAtoms": optimised_spec,
         "atoms": [
             {"element": a["element"], "z": a["z"], "xyz": [round(float(v), 8) for v in a["xyz"]]}

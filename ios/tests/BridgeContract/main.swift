@@ -217,6 +217,14 @@ do {
     // The panel also shows the geometry block and the engine log.
     expect(optimisation.geometry.bonds.count == 2, "two bonds reported")
     expect(optimisation.geometry.angles.count == 1, "one valence angle reported")
+
+    // The cheap relaxation grid is reported alongside the production grid, so
+    // the UI can say which numbers came from where.
+    expect(optimisation.gridLevel != nil, "production grid level reported (\(optimisation.gridLevel.map(String.init) ?? "nil"))")
+    expect(optimisation.relaxGridLevel != nil, "relaxation grid level reported (\(optimisation.relaxGridLevel.map(String.init) ?? "nil"))")
+    if let production = optimisation.gridLevel, let relax = optimisation.relaxGridLevel {
+        expect(relax <= production, "relaxation grid is not finer than the production grid (\(relax) <= \(production))")
+    }
 }
 
 print("error envelope")

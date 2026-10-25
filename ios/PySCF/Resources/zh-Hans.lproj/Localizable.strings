@@ -98,6 +98,13 @@
 "screen.results" = "结果";
 "screen.table" = "元素";
 "builder.maxSteps" = "最大优化步数";
+"builder.accuracy" = "优化精度";
+"accuracy.fast" = "快速";
+"accuracy.balanced" = "均衡";
+"accuracy.precise" = "精确";
+"accuracy.fast.blurb" = "弛豫时用最粗的网格。最快，报告的最终能量仍取自生产网格。";
+"accuracy.balanced.blurb" = "弛豫用粗网格，最终能量用生产网格重新计算。推荐的默认值。";
+"accuracy.precise.blurb" = "全程使用生产网格，最终能量用更密的网格。最慢，用于最终数值。";
 "busy.optimising" = "正在优化几何结构（%@）…";
 "calc.optimise.blurb" = "使用解析梯度弛豫分子几何结构";
 "results.optimisation" = "几何优化";
