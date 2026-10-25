@@ -29,6 +29,11 @@
 "builder.run" = "Run";
 "builder.scanBond" = "Scan %d–%d bond";
 "builder.spin" = "Spin (2S): %d";
+"builder.threads" = "Threads";
+"builder.threads.auto" = "Automatic";
+"builder.threads.count" = "%d thread(s)";
+"builder.threads.hint.auto" = "Uses one thread per core, up to %d on this device.";
+"builder.threads.hint.fixed" = "Fixed at %d. Fewer threads use less power; more than the core count adds overhead without speed.";
 "busy.running" = "Running %@…";
 "busy.scanning" = "Scanning bond %d–%d…";
 "calc.ccsd.blurb" = "Coupled-cluster singles and doubles";

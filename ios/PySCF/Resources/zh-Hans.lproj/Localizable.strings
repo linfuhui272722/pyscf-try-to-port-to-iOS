@@ -29,6 +29,11 @@
 "builder.run" = "运行";
 "builder.scanBond" = "扫描 %d–%d 键";
 "builder.spin" = "自旋 (2S)：%d";
+"builder.threads" = "线程数";
+"builder.threads.auto" = "自动";
+"builder.threads.count" = "%d 线程";
+"builder.threads.hint.auto" = "按核心数自动选择，本机最多 %d 线程。";
+"builder.threads.hint.fixed" = "固定为 %d 线程。线程越少越省电；超过核心数只会增加调度开销，不会更快。";
 "busy.running" = "正在计算 %@…";
 "busy.scanning" = "正在扫描键 %d–%d…";
 "calc.ccsd.blurb" = "耦合簇单双激发";

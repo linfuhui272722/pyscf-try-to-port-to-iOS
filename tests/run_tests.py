@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODULES = ["test_engine.py", "test_geomopt.py", "test_shims.py"]
+MODULES = ["test_engine.py", "test_geomopt.py", "test_shims.py", "test_threads.py"]
 
 # Imports the module and calls every top-level test_* function, in one process.
 HARNESS = r"""

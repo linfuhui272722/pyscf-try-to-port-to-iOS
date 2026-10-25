@@ -95,6 +95,19 @@ struct PySCFEngine {
         try await run { try call("openmp") }
     }
 
+    /// Reads the current OpenMP thread setting.
+    func threads() async throws -> ThreadSetting {
+        try await run { ThreadSetting(try call("threads")) }
+    }
+
+    /// Sets the OpenMP thread count, or restores the default when ``n`` is nil.
+    ///
+    /// The runtime applies this on its next parallel region, so a calculation
+    /// already in flight keeps the count it started with.
+    func setThreads(_ n: Int?) async throws -> ThreadSetting {
+        try await run { ThreadSetting(try call("threads", ["threads": n ?? 0])) }
+    }
+
     func elements() async throws -> [Element] {
         try await run { try call("elements").objects("elements").map(Element.init) }
     }

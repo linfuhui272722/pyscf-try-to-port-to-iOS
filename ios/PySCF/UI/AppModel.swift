@@ -129,6 +129,24 @@ final class AppModel: ObservableObject {
     @Published var maxOptimisationSteps: Int = 40
     @Published var relaxationAccuracy: RelaxationAccuracy = .balanced
 
+    /// OpenMP thread count, or nil for "let the runtime decide". Mirrored into
+    /// UserDefaults so the choice survives a relaunch: it is a preference about
+    /// the device, not about one calculation.
+    @Published var threadOverride: Int? {
+        didSet {
+            guard !isRestoringThreads else { return }
+            let defaults = UserDefaults.standard
+            if let value = threadOverride {
+                defaults.set(value, forKey: Self.threadsKey)
+            } else {
+                defaults.removeObject(forKey: Self.threadsKey)
+            }
+        }
+    }
+
+    private static let threadsKey = "pyscf.threads.override"
+    private var isRestoringThreads = false
+
     @Published var capabilities: Capabilities?
     @Published var catalog = PresetCatalog(JSONObject([:]))
     @Published var elements: [Element] = []
@@ -178,6 +196,7 @@ final class AppModel: ObservableObject {
             catalog = try await engine.presets()
             elements = try await engine.elements()
             await refreshGeometry()
+            await restoreThreadPreference()
         } catch {
             report(error)
             await captureDiagnostics()
@@ -234,6 +253,46 @@ final class AppModel: ObservableObject {
     func clearDeviceLog() {
         DiagnosticsLog.shared.clear()
         refreshDeviceLog()
+    }
+
+    // MARK: - OpenMP threads
+
+    /// Pushes the stored thread preference into the runtime at launch.
+    ///
+    /// Only runs when a choice was saved; the default is left alone so a fresh
+    /// install uses whatever the runtime would have picked.
+    private func restoreThreadPreference() async {
+        let saved = UserDefaults.standard.object(forKey: Self.threadsKey) as? Int
+        guard let saved = saved, saved > 0 else { return }
+        isRestoringThreads = true
+        threadOverride = saved
+        isRestoringThreads = false
+        await applyThreads(saved)
+    }
+
+    /// Applies a thread count, or restores the default when ``n`` is nil.
+    ///
+    /// The engine sets this on the runtime directly, so the next calculation
+    /// picks it up; a run already in progress keeps the count it began with.
+    func applyThreads(_ n: Int?) async {
+        do {
+            let setting = try await engine.setThreads(n)
+            threadOverride = setting.overrideValue
+            log("OpenMP threads: \(setting.threads) of \(setting.cores ?? 0) cores"
+                + (setting.overrideValue == nil ? " (automatic)" : ""))
+            // The footer reads the thread count out of the capabilities snapshot,
+            // so it has to be refreshed for the change to be visible there.
+            if let caps = try? await engine.capabilities() {
+                capabilities = caps
+            }
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Number of cores the device reports, for the picker's upper bound.
+    var availableCores: Int {
+        capabilities?.engine.cores ?? ProcessInfo.processInfo.processorCount
     }
 
     func apply(_ preset: MoleculePreset) {

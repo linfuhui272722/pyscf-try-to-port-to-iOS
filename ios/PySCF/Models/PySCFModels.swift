@@ -169,6 +169,12 @@ struct EngineStatus {
     /// it so OpenMP can be confirmed on device, where the build host cannot.
     var threads: Int?
     var threadsError: String?
+    /// The user's chosen thread count, or nil when the runtime decides. Kept
+    /// apart from ``threads`` so the picker can show "automatic" as its own
+    /// state instead of the number that state resolves to.
+    var threadOverride: Int?
+    var maxThreads: Int?
+    var cores: Int?
 
     init(_ json: JSONObject) {
         available = json.value("available") as Bool? ?? false
@@ -179,6 +185,28 @@ struct EngineStatus {
         libraries = json.boolMap("libraries")
         threads = json.integer("threads")
         threadsError = json.value("threadsError") as String?
+        threadOverride = json.integer("threadOverride")
+        maxThreads = json.integer("maxThreads")
+        cores = json.integer("cores")
+    }
+}
+
+/// Result of reading or writing the OpenMP thread setting.
+struct ThreadSetting {
+    /// What the runtime reports, which equals the override once one is set and
+    /// the core count otherwise.
+    var threads: Int
+    /// The user's choice, or nil when the runtime decides. Named ``overrideValue``
+    /// because ``override`` is a declaration keyword in Swift.
+    var overrideValue: Int?
+    var maxThreads: Int
+    var cores: Int?
+
+    init(_ json: JSONObject) {
+        threads = json.integer("threads") ?? 1
+        overrideValue = json.integer("override")
+        maxThreads = json.integer("maxThreads") ?? 64
+        cores = json.integer("cores")
     }
 }
 

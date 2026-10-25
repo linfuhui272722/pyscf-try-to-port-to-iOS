@@ -104,6 +104,18 @@ METHODS = ("RHF", "UHF", "ROHF", "RKS", "UKS", "MP2", "CCSD")
 # available.
 DEFAULT_MAX_MEMORY_MB = 3072
 
+# Runtime OpenMP thread count.  ``None`` leaves the runtime's own choice alone,
+# which is what the app does until the user picks a number.  The value is set
+# through PySCF's own helper rather than ``OMP_NUM_THREADS``: the runtime reads
+# that variable once, when it initialises, so exporting it afterwards has no
+# effect on a process that is already running.
+_THREADS: int | None = None
+
+# Upper bound for the picker.  The runtime accepts any positive integer, but
+# past the core count the extra workers only add scheduling overhead, and a
+# mistyped value should not be able to ask for thousands of threads.
+MAX_THREADS = 64
+
 # CODATA Bohr radius in Angstrom.  PySCF's coordinate and gradient units are
 # Bohr, so the optimiser converts at its boundaries.
 _BOHR_TO_ANGSTROM = 0.52917721092
@@ -225,6 +237,54 @@ def _runtime_paths() -> dict[str, str]:
     return {k: v for k, v in candidates.items() if v}
 
 
+def num_threads(n: int | None = None) -> dict:
+    """Read or set the OpenMP thread count for subsequent calculations.
+
+    Called with no argument, reports the current setting. Called with ``n``,
+    applies it immediately through ``pyscf.lib.num_threads``, which calls
+    ``omp_set_num_threads`` — the runtime picks the value up on the next
+    parallel region, so a calculation already running is unaffected but the next
+    one uses the new count.
+
+    ``n = 0`` means "let the runtime decide" and restores the default, which is
+    one thread per available core. This is a distinct state from any particular
+    number, so it is reported separately rather than being collapsed into the
+    core count.
+    """
+    _require_pyscf()
+    from pyscf import lib as _lib
+
+    global _THREADS
+    if n is not None:
+        requested = int(n)
+        if requested < 0:
+            raise ValueError("thread count cannot be negative")
+        if requested > MAX_THREADS:
+            raise ValueError(f"thread count cannot exceed {MAX_THREADS}")
+        if requested == 0:
+            _THREADS = None
+            # Restoring the default means one thread per core. It cannot be read
+            # back from the runtime: ``num_threads()`` reports whatever was set
+            # last, so after an override it returns the override. The core count
+            # is the value the runtime would have chosen on its own.
+            applied = int(_lib.num_threads(os.cpu_count() or 1))
+        else:
+            _THREADS = requested
+            applied = int(_lib.num_threads(requested))
+        get_logger().write(
+            f"threads: requested={requested} applied={applied} cores={os.cpu_count()}",
+            tag="threads",
+        )
+
+    return {
+        "ok": True,
+        "threads": int(_lib.num_threads()),
+        "override": _THREADS,
+        "maxThreads": MAX_THREADS,
+        "cores": os.cpu_count(),
+    }
+
+
 def engine_status() -> dict:
     """Report whether the native PySCF stack loaded correctly."""
     if pyscf is None:
@@ -269,6 +329,13 @@ def engine_status() -> dict:
         "libraries": libs,
         "threads": threads,
         "threadsError": threads_error,
+        # The user's choice, kept separate from ``threads``: that is what the
+        # runtime reports, which equals the override once one is set and the core
+        # count otherwise. The UI needs the two apart to show "automatic" as a
+        # state rather than as the number it happens to resolve to.
+        "threadOverride": _THREADS,
+        "maxThreads": MAX_THREADS,
+        "cores": os.cpu_count(),
     }
 
 
@@ -834,6 +901,10 @@ def dispatch(method: str, params: dict) -> dict:
         from .omp_probe import openmp_report
 
         return {"ok": True, **openmp_report()}
+    if method == "threads":
+        # Read when "threads" is absent, set when it is present. A single method
+        # for both keeps the two directions from drifting apart.
+        return num_threads(params.get("threads"))
 
     handlers = {
         "scf": run_scf,

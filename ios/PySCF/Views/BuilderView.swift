@@ -184,7 +184,43 @@ struct BuilderView: View {
             if model.calculation == .scf || model.calculation == .dft {
                 Toggle(L("builder.densityCube"), isOn: $model.wantGrid)
             }
+
+            Divider()
+            threadPicker
         }
+    }
+
+    /// Thread count for the calculation.
+    ///
+    /// Offered here rather than only in Diagnostics because it is a setting the
+    /// user changes for a reason — a long run on a warm device, or a phone where
+    /// using every core drains the battery — and the reason is present while
+    /// choosing the calculation, not while reading logs.
+    @ViewBuilder
+    private var threadPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker(L("builder.threads"), selection: $model.threadOverride) {
+                Text(L("builder.threads.auto")).tag(Int?.none)
+                ForEach(1...max(model.availableCores, 1), id: \.self) { count in
+                    Text(LF("builder.threads.count", count)).tag(Int?.some(count))
+                }
+            }
+            .pickerStyle(.menu)
+            .onChange(of: model.threadOverride) { value in
+                Task { await model.applyThreads(value) }
+            }
+            Text(threadHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var threadHint: String {
+        if let override = model.threadOverride {
+            return LF("builder.threads.hint.fixed", override)
+        }
+        let cores = model.availableCores
+        return LF("builder.threads.hint.auto", cores)
     }
 
     private var actionPanel: some View {

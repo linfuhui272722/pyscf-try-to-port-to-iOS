@@ -73,6 +73,7 @@ def capabilities() -> dict:
             "bond_scan",
             "optimise",
             "openmp",
+            "threads",
         ],
         "basisSets": list(engine.BASIS_SETS),
         "functionals": list(engine.FUNCTIONALS),
