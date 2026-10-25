@@ -91,11 +91,18 @@ FUNCTIONALS = (
 METHODS = ("RHF", "UHF", "ROHF", "RKS", "UKS", "MP2", "CCSD")
 
 # Ceiling handed to PySCF for sizing its integral and DFT grid buffers, in MB.
-# PySCF's own default is 2000, which assumes a desktop; on a tablet the buffers
-# that figure implies push the process into the OS memory limit, and a memory
-# kill leaves no crash report.  The grid loop adapts by using smaller blocks, so
-# the cost of a lower value is time rather than correctness.
-DEFAULT_MAX_MEMORY_MB = 512
+# PySCF's own default is 2000, which assumes a desktop. The grid loop adapts by
+# using smaller blocks, so a higher value buys speed and costs memory rather than
+# changing the result.
+#
+# 3072 is usable only because the app carries
+# com.apple.developer.kernel.increased-memory-limit (ios/PySCF.entitlements). The
+# default jetsam ceiling on a tablet is well below this, so without the
+# entitlement a calculation large enough to reach 3072 MB is killed silently
+# before it can finish. On a device that ignores the entitlement, treat this as
+# an upper bound the OS will not honour rather than a figure that is actually
+# available.
+DEFAULT_MAX_MEMORY_MB = 3072
 
 # CODATA Bohr radius in Angstrom.  PySCF's coordinate and gradient units are
 # Bohr, so the optimiser converts at its boundaries.
@@ -413,9 +420,9 @@ def _make_method(mol, method: str, xc: str, params: dict):
     if level is not None and hasattr(mf, "grids"):
         mf.grids.level = int(level)
     # PySCF sizes its DFT grid buffers from ``max_memory``, which defaults to
-    # 2000 MB — a desktop figure. On a tablet that over-commits and the process
-    # is killed by the OS, which leaves no crash log at all. Capping it makes the
-    # grid loop use smaller blocks, which is slower but bounded.
+    # 2000 MB — a desktop figure. The value only decides how large a block the
+    # grid loop works on; a lower figure means more passes, not a different
+    # result. See DEFAULT_MAX_MEMORY_MB for why the ceiling is what it is.
     if hasattr(mf, "max_memory"):
         mf.max_memory = float(params.get("maxMemory", DEFAULT_MAX_MEMORY_MB))
     return mf
