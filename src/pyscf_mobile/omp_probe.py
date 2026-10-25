@@ -78,10 +78,21 @@ def _omp_state() -> dict:
 def _parallel_copy() -> tuple[bool, str]:
     """Run one real parallel region inside ``libnp_helper``.
 
-    ``NPomp_dcopy`` is a parallel ``memcpy`` and the smallest entry point that
+    ``NPomp_dcopy`` is a parallel matrix copy and the smallest entry point that
     opens a parallel region.  It needs no molecule, no SCF object and no prior
     calculation, so it can run at startup — which is what makes it useful as a
     canary rather than a test that only fails after twenty minutes of work.
+
+    The signature has six parameters, not three::
+
+        void NPomp_dcopy(const size_t m, const size_t n,
+                         const double *in,  const size_t in_stride,
+                         double *out,       const size_t out_stride);
+
+    Passing the shorter argument list leaves ``n`` holding a pointer and ``out``
+    holding whatever was in the register, and the function writes through the
+    second.  That is an immediate crash, and it looks exactly like the OpenMP
+    runtime being broken, so the arity is spelled out here and in ``argtypes``.
     """
     import numpy as np
     from pyscf.lib import numpy_helper
@@ -90,20 +101,95 @@ def _parallel_copy() -> tuple[bool, str]:
     if helper is None:
         return False, "libnp_helper is not loaded"
 
-    size = _COPY_ELEMENTS
-    source = np.arange(size, dtype=np.float64)
-    target = np.zeros(size, dtype=np.float64)
+    # One row of _COPY_ELEMENTS doubles: m = elements, n = 1, unit strides.
+    m = _COPY_ELEMENTS
+    source = np.arange(m, dtype=np.float64)
+    target = np.zeros(m, dtype=np.float64)
 
     fn = helper.NPomp_dcopy
     fn.restype = None
-    fn.argtypes = [ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
-    fn(ctypes.c_size_t(size),
+    fn.argtypes = [
+        ctypes.c_size_t,  # m
+        ctypes.c_size_t,  # n
+        ctypes.c_void_p,  # in
+        ctypes.c_size_t,  # in_stride
+        ctypes.c_void_p,  # out
+        ctypes.c_size_t,  # out_stride
+    ]
+    fn(ctypes.c_size_t(m),
+       ctypes.c_size_t(1),
        source.ctypes.data_as(ctypes.c_void_p),
-       target.ctypes.data_as(ctypes.c_void_p))
+       ctypes.c_size_t(1),
+       target.ctypes.data_as(ctypes.c_void_p),
+       ctypes.c_size_t(1))
 
     if not np.array_equal(source, target):
         return False, "parallel copy produced the wrong result"
-    return True, f"parallel copy of {size} doubles OK"
+    return True, f"parallel copy of {m} doubles OK"
+
+
+def _thread_utilisation() -> dict:
+    """Time the parallel copy against a serial one of the same size.
+
+    A thread count read from the runtime only says what the pool is *allowed* to
+    use.  Whether workers are actually created is a separate question, and on
+    iOS it is the one that matters: a sandboxed process can be told there are
+    eight cores while ``sysconf(_SC_NPROCESSORS_ONLN)`` returns one, in which
+    case libomp sizes its pool from that and every region runs on a single
+    thread.  The configuration then reads 8 and nothing is parallel.
+
+    The test is a repeated copy, large enough that a thread pool would show up.
+    It is a timing comparison and therefore noisy, so it is reported as a ratio
+    for interpretation rather than asserted on.
+    """
+    import time
+
+    import numpy as np
+    from pyscf.lib import numpy_helper
+
+    helper = numpy_helper._np_helper
+    if helper is None:
+        return {"error": "libnp_helper is not loaded"}
+
+    m = _COPY_ELEMENTS
+    source = np.arange(m, dtype=np.float64)
+    target = np.zeros(m, dtype=np.float64)
+    rounds = 40
+
+    fn = helper.NPomp_dcopy
+    fn.restype = None
+    fn.argtypes = [
+        ctypes.c_size_t,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    ]
+    args = (ctypes.c_size_t(m), ctypes.c_size_t(1),
+            source.ctypes.data_as(ctypes.c_void_p), ctypes.c_size_t(1),
+            target.ctypes.data_as(ctypes.c_void_p), ctypes.c_size_t(1))
+
+    # Warm the pool first: the first region pays for thread creation, and
+    # including that cost would make the parallel figure look worse than it is.
+    fn(*args)
+
+    start = time.perf_counter()
+    for _ in range(rounds):
+        fn(*args)
+    parallel_ms = (time.perf_counter() - start) * 1000.0
+
+    start = time.perf_counter()
+    for _ in range(rounds):
+        np.copyto(target, source)
+    serial_ms = (time.perf_counter() - start) * 1000.0
+
+    return {
+        "parallelMs": round(parallel_ms, 3),
+        "serialMs": round(serial_ms, 3),
+        "ratio": round(parallel_ms / serial_ms, 3) if serial_ms else None,
+        "rounds": rounds,
+    }
 
 
 def probe_openmp() -> dict:
@@ -129,6 +215,17 @@ def probe_openmp() -> dict:
     report["maxThreads"] = state.get("omp_get_max_threads")
     report["numProcs"] = state.get("omp_get_num_procs")
 
+    # What the OS reports as usable CPUs, next to what the runtime will use. The
+    # two disagreeing is the signature of a sandbox that hides the core count:
+    # the runtime reads 1 and runs everything on one thread no matter what
+    # OMP_NUM_THREADS says, so the setting looks correct and the work is serial.
+    try:
+        report["osCpuCount"] = os.cpu_count()
+        report["sysconfCpus"] = os.sysconf("SC_NPROCESSORS_ONLN")
+    except Exception as exc:
+        report["osCpuCount"] = f"{type(exc).__name__}: {exc}"
+        report["sysconfCpus"] = None
+
     from .diaglog import crash_probe
 
     logger.write(f"openmp probe: entering parallel region; {crash_probe()}", tag="omp")
@@ -144,11 +241,19 @@ def probe_openmp() -> dict:
         report["parallelDetail"] = f"{type(exc).__name__}: {exc}"
     report["elapsedMs"] = round((time.perf_counter() - started) * 1000.0, 3)
 
+    # Whether the pool actually parallelises, which the thread count alone does
+    # not establish. A failure here is reported, not raised.
+    try:
+        report["utilisation"] = _thread_utilisation()
+    except Exception as exc:
+        report["utilisation"] = {"error": f"{type(exc).__name__}: {exc}"}
+
     report["runtimeAfter"] = _omp_state()
     logger.write(
         f"openmp probe: survived the parallel region in {report['elapsedMs']}ms; {crash_probe()}",
         tag="omp",
     )
+    logger.write(f"openmp probe: utilisation {report.get('utilisation')}", tag="omp")
     return report
 
 
@@ -217,9 +322,15 @@ def openmp_report() -> dict:
 
 
 def _summarise(report: dict) -> str:
+    util = report.get("utilisation") or {}
+    ratio = util.get("ratio")
+    # ratio is parallel/serial; below 1 means the parallel path won.
+    speedup = f"{1 / ratio:.1f}x" if ratio else "n/a"
     return (
         f"threads={report.get('reportedThreads')} "
         f"max={report.get('maxThreads')} "
         f"procs={report.get('numProcs')} "
-        f"parallel={report.get('parallelRegion')}"
+        f"osCpus={report.get('osCpuCount')} "
+        f"parallel={report.get('parallelRegion')} "
+        f"speedup={speedup}"
     )
