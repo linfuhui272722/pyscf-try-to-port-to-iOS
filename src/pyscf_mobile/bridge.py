@@ -71,6 +71,7 @@ def capabilities() -> dict:
             "mp2",
             "ccsd",
             "bond_scan",
+            "nbo",
             "optimise",
             "openmp",
             "threads",

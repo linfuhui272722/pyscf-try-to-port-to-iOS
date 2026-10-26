@@ -22,7 +22,7 @@ import time
 import traceback
 from typing import Any, Iterable
 
-from . import geometry
+from . import geometry, nbo
 from .diaglog import crash_probe, get_logger
 
 # --------------------------------------------------------------------------
@@ -636,6 +636,7 @@ def _electronic_structure(mf, atoms, include) -> dict:
         result["dipole"] = _dipole(mf)
         result["mulliken"] = _mulliken(mf, atoms)
         result["mayer"] = _mayer_bond_orders(mf, atoms)
+        result["npa"] = nbo.natural_population_analysis(mf, atoms)
     if "mo" in include:
         result["moCoefficients"] = np.asarray(mf.mo_coeff, dtype=float).tolist()
     if "overlap" in include:
@@ -994,6 +995,29 @@ def analyse_geometry(params: dict) -> dict:
     return {"ok": True, **geometry.describe(atoms)}
 
 
+def run_natural_population(params: dict) -> dict:
+    """Natural population analysis for an existing wavefunction.
+
+    Standalone so the analysis can be asked for directly, without re-running
+    the mean field that produced the density.  ``include`` accepts the same
+    ``_skip_population`` switch as the SCF entry points, since callers that only
+    want the charges should not pay for the rest of the payload.
+    """
+    start = time.perf_counter()
+    mf, atoms, basis, method, _log = _run_mean_field(params)
+    wall_ms = (time.perf_counter() - start) * 1000.0
+    analysis = nbo.natural_population_analysis(mf, atoms)
+    if analysis is None:
+        raise ValueError("natural population analysis is unavailable for this wavefunction")
+    return {
+        "ok": True,
+        "method": f"{method}/{basis}",
+        "energy": round(float(mf.e_tot), 10),
+        "wallTimeMs": round(wall_ms, 3),
+        **analysis,
+    }
+
+
 def dispatch(method: str, params: dict) -> dict:
     """Route a request to the matching handler."""
     if method == "elements":
@@ -1028,6 +1052,7 @@ def dispatch(method: str, params: dict) -> dict:
         "ccsd": run_ccsd,
         "bond_scan": run_bond_scan,
         "geometry": analyse_geometry,
+        "nbo": run_natural_population,
         "optimise": run_geometry_optimisation,
     }
     if method not in handlers:

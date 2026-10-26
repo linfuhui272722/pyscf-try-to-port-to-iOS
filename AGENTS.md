@@ -71,6 +71,47 @@ breakage:
 
 These all cost real debugging time; do not "clean them up".
 
+**NBO is not available, and NPA is not a substitute for it.** PySCF ships
+`pyscf/lo/nao.py`, which builds natural atomic orbitals -- the *first* step of
+Weinhold's NBO method -- and nothing beyond it. There is no NBO transform, no
+E(2) second-order perturbation analysis, and no natural bond orbital output
+anywhere in the tree. This is not a gap in PySCF's packaging: the reference NBO
+implementation (NBO6/NBO7) is licensed software, and the other packages that
+advertise NBO do not contain an implementation either. Psi4's `write_nbo()` is
+the clearest example -- it writes a `$GENNBO` input file for the proprietary
+binary to read, and Psi4 itself computes nothing.
+
+`src/pyscf_mobile/nbo.py` therefore implements only the population half, which
+is exact and checkable. Two shortcuts to the orbital half were tried and both
+give demonstrably wrong answers, so do not "finish the job" by re-adding either:
+
+* Diagonalising the density over the whole NAO space returns *natural orbitals*.
+  The Fock matrix is diagonal in that basis, so every E(2) comes out identically
+  zero -- a silent, plausible-looking empty result.
+* Building bond and lone-pair orbitals from the natural hybrid orbitals in one
+  shot gives water O-H occupancies of 1.62 against the correct 1.9998, and E(2)
+  values of 250+ kcal/mol against the correct 7-12.
+
+The reason is that NAOs are orthonormal, so cross-atom NHO overlap is zero and
+cannot identify a bond; bonds must be found by density coupling instead. Getting
+the occupancies right then needs the published iterative sequence of 2x2
+rotations, which is the part that is not openly specified. A wrong E(2) is worse
+than no E(2) in a chemistry tool, so the module stops at NPA and says so in its
+docstring.
+
+NPA itself is worth having on its own: its charges are basis-set stable (water's
+oxygen is -0.95 in 6-31G, -0.96 in 6-31G\*, -0.92 in cc-pVDZ) where Mulliken
+moves by more than half an electron over the same three bases, so the results
+view shows both. `tests/test_nbo.py` pins the charges against published NPA
+values and asserts the Mulliken drift as the contrast.
+
+One trap when reading the output: the shell labels must be the *natural* ones,
+not the basis set's. 6-31G's valence s contraction is labelled `3s` in the
+basis, but NBO reports it as 2s, and cc-pVDZ packs 1s and 2s into a single
+shell -- numbering by shell there merges the core with the valence and reports
+a 1s population near 4. Number the distinct basis labels per atom and angular
+momentum instead.
+
 **Never filter the package tree by a list of file extensions.** The staging step
 in `build-pyscf-ios.sh` used to copy `*.py` and `*.dat`, which dropped
 `pyscf/gto/basis/bse_meta.json`. `pyscf/gto/mole.py` opens that file while it is

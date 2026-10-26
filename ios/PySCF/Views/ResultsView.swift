@@ -19,6 +19,7 @@ struct ResultsView: View {
                     headline(result)
                     orbitalPanel(result)
                     chargesPanel(result)
+                    naturalPanel(result)
                     mayerPanel(result)
                     dipolePanel(result)
                     if let scan = model.scan {
@@ -202,6 +203,48 @@ struct ResultsView: View {
                         MetricRow(label: element, value: String(format: "%+.4f e", charge))
                     }
                 }
+            }
+        }
+    }
+
+    /// Natural population analysis. Shown next to Mulliken rather than instead
+    /// of it: the two answer the same question, and the fact that NPA barely
+    /// moves between bases while Mulliken does is the reason to trust it.
+    @ViewBuilder
+    private func naturalPanel(_ result: ScfResult) -> some View {
+        Panel(title: L("results.npa"), systemImage: "atom") {
+            if let npa = result.npa, !npa.perAtom.isEmpty {
+                ForEach(npa.perAtom) { atom in
+                    MetricRow(
+                        label: "\(atom.element)\(atom.index + 1)",
+                        value: String(format: "%+.4f e", atom.charge),
+                        emphasised: abs(atom.charge) > 0.5
+                    )
+                    if !atom.configuration.isEmpty {
+                        Text(atom.configurationText)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Divider()
+                MetricRow(
+                    label: L("results.npa.sumRule"),
+                    value: String(format: "%.4f / %d", npa.totalPopulation, npa.nElectrons)
+                )
+                if !npa.sumRuleOk {
+                    // The occupancies partition the density, so their sum is
+                    // fixed by the electron count. A mismatch means the
+                    // transform or the density is wrong, not that the numbers
+                    // are merely imprecise.
+                    Label(L("results.npa.sumMismatch"), systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Text(L("results.npa.note"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(L("results.notAvailable")).font(.callout).foregroundStyle(.secondary)
             }
         }
     }

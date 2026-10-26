@@ -104,6 +104,10 @@
 "results.empty.title" = "暂无结果";
 "results.engineLog" = "引擎日志";
 "results.magnitude" = "大小";
+"results.npa" = "自然布居分析（NPA）";
+"results.npa.note" = "自然原子轨道是密度的本征轨道，因此这些电荷随基组的变化远小于 Mulliken。本应用不提供 NBO 轨道与 E(2) 二阶微扰能。";
+"results.npa.sumMismatch" = "求和规则不满足——各轨道占据数之和应等于电子数。";
+"results.npa.sumRule" = "占据数合计 / 电子数";
 "results.mayer" = "Mayer 键级";
 "results.mayer.note" = "开壳层按自旋分辨计算。MP2 与 CCSD 显示的是其 SCF 参考态的轨道，故键级与之一致。";
 "results.mayer.sumMismatch" = "求和规则不满足——键级可能不正确。";

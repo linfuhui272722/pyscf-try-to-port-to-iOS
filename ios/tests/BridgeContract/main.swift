@@ -115,6 +115,25 @@ do {
     expect((scf.gap ?? 0) > 0, "positive HOMO-LUMO gap")
     expect(scf.mulliken.perAtom.count == 3, "three Mulliken charges")
     expect(abs(scf.mulliken.perAtom.reduce(0) { $0 + $1.charge }) < 1e-6, "Mulliken charges sum to zero")
+    // Natural population analysis decodes from the same payload. The field is
+    // optional on the Swift side, so a rename on either side would silently
+    // drop the panel rather than fail; assert the numbers instead.
+    if let npa = scf.npa {
+        expect(npa.perAtom.count == 3, "three natural charges")
+        expect(npa.analysisMethod == "NAO/NPA", "analysis names the method (\(npa.analysisMethod))")
+        expect(npa.sumRuleOk, "occupancies sum to the electron count")
+        expect(abs(npa.totalPopulation - Double(npa.nElectrons)) < 1e-6, "occupancy total matches N")
+        // The fixture is sto-3g, a minimal basis, so the natural charge is much
+        // smaller than the -0.95 the same molecule shows in 6-31G.  The value
+        // asserted here is the published NPA result for water/STO-3G.
+        expect(abs(npa.perAtom[0].charge - (-0.3996)) < 0.01, "oxygen charge matches NPA for sto-3g (\(npa.perAtom[0].charge))")
+        expect(npa.perAtom[0].charge < npa.perAtom[1].charge, "oxygen is more negative than hydrogen")
+        expect(npa.perAtom[0].configuration["1s"] != nil, "oxygen has a 1s shell")
+        expect(npa.perAtom[0].configurationText.contains("2s"), "configuration prints shell labels (\(npa.perAtom[0].configurationText))")
+        expect(npa.perAtom[0].orbitals.count == 5, "oxygen has five NAOs (\(npa.perAtom[0].orbitals.count))")
+    } else {
+        expect(false, "natural population analysis missing from the SCF payload")
+    }
     expect(scf.dipole.vector.count == 3, "dipole vector is 3D")
     expect(scf.dipole.magnitude > 0.5, "water has a dipole (\(scf.dipole.magnitude) D)")
     expect(scf.wallTimeMs > 0, "wall time recorded")

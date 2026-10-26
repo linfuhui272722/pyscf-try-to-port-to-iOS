@@ -104,6 +104,10 @@
 "results.empty.title" = "No results yet";
 "results.engineLog" = "Engine log";
 "results.magnitude" = "Magnitude";
+"results.npa" = "Natural population analysis (NPA)";
+"results.npa.note" = "Natural atomic orbitals are the eigenvectors of the density, so these charges move far less with the basis set than Mulliken's. Orbitals and E(2) perturbation energies are not reported.";
+"results.npa.sumMismatch" = "Sum rule not satisfied - the occupations should add up to the electron count.";
+"results.npa.sumRule" = "Occupancy sum / electrons";
 "results.mayer" = "Mayer bond orders";
 "results.mayer.note" = "Open-shell references are spin-resolved. MP2 and CCSD report the orbitals of their SCF reference, so their bond orders match it.";
 "results.mayer.sumMismatch" = "Sum rule not satisfied - the bond orders may be wrong.";

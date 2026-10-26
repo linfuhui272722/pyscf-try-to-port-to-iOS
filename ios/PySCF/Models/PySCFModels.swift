@@ -409,6 +409,99 @@ struct MullikenAnalysis {
     }
 }
 
+/// Natural population analysis (NPA), the population half of NBO theory.
+///
+/// The natural atomic orbitals are the eigenvectors of the atomic blocks of the
+/// density, so these charges depend far less on the basis set than Mulliken's
+/// do: water's oxygen is near -0.95 in 6-31G, 6-31G* and cc-pVDZ alike, where
+/// Mulliken moves by more than half an electron over the same three bases. Both
+/// are shown for that reason.
+///
+/// The engine reports NPA only. It does not report NBO orbitals or the
+/// second-order perturbation energies E(2) that the NBO program produces,
+/// because those require the iterative NBO transformation whose reference
+/// implementation is licensed software; see `src/pyscf_mobile/nbo.py`.
+struct NaturalPopulationAnalysis {
+    var perAtom: [NaturalAtom]
+    var perElement: [String: Double]
+    var nElectrons: Int
+    var totalPopulation: Double
+    var sumRuleOk: Bool
+    var analysisMethod: String
+
+    init(_ json: JSONObject) {
+        perAtom = json.objects("perAtom").map(NaturalAtom.init)
+        perElement = json.doubleMap("perElement")
+        nElectrons = json.integer("nElectrons") ?? 0
+        totalPopulation = json.number("totalPopulation") ?? 0
+        sumRuleOk = json.value("sumRuleOk") as Bool? ?? false
+        analysisMethod = json.value("analysisMethod") as String? ?? ""
+    }
+}
+
+/// One atom's natural charge, occupancy and natural electron configuration.
+struct NaturalAtom: Identifiable, Hashable {
+    var index: Int
+    var element: String
+    var population: Double
+    var charge: Double
+    /// Shell populations such as `["1s": 2.0, "2s": 1.77, "2p": 5.18]`.
+    var configuration: [String: Double]
+    var orbitals: [NaturalOrbital]
+
+    var id: Int { index }
+
+    init(_ json: JSONObject) {
+        index = json.integer("index") ?? 0
+        element = json.value("element") as String? ?? "?"
+        population = json.number("population") ?? 0
+        charge = json.number("charge") ?? 0
+        configuration = json.doubleMap("configuration")
+        orbitals = json.objects("orbitals").map(NaturalOrbital.init)
+    }
+
+    /// The configuration as a single line, in shell order.
+    var configurationText: String {
+        configuration
+            .sorted { lhs, rhs in
+                let left = Self.shellOrder(lhs.key)
+                let right = Self.shellOrder(rhs.key)
+                return left == right ? lhs.key < rhs.key : left < right
+            }
+            .map { String(format: "%@ %.2f", $0.key, $0.value) }
+            .joined(separator: "  ")
+    }
+
+    /// Sorts `2p` before `2s` before `3s`, by principal number then angular
+    /// momentum, so the printed configuration reads the way it is written by
+    /// hand rather than alphabetically.
+    private static func shellOrder(_ shell: String) -> (Int, Int) {
+        let digits = shell.prefix { $0.isNumber }
+        let principal = Int(digits) ?? 99
+        let letters = "spdfgh"
+        let letter = shell.first { $0.isLetter }.map { $0.lowercased() } ?? "s"
+        let angular = letters.firstIndex(of: Character(letter)).map { letters.distance(from: letters.startIndex, to: $0) } ?? 0
+        return (principal, angular)
+    }
+}
+
+/// One natural atomic orbital.
+struct NaturalOrbital: Identifiable, Hashable {
+    var label: String
+    var shell: String
+    var occupation: Double
+    var character: String
+
+    var id: String { label }
+
+    init(_ json: JSONObject) {
+        label = json.value("label") as String? ?? ""
+        shell = json.value("shell") as String? ?? ""
+        occupation = json.number("occupation") ?? 0
+        character = json.value("character") as String? ?? ""
+    }
+}
+
 /// One bond with its Mayer bond order.
 struct MayerBond: Identifiable, Hashable {
     var i: Int
@@ -498,6 +591,7 @@ struct ScfResult {
     var occupations: [Double]
     var dipole: Dipole
     var mulliken: MullikenAnalysis
+    var npa: NaturalPopulationAnalysis?
     var mayer: MayerAnalysis?
     var wallTimeMs: Double
     var log: String
@@ -522,6 +616,7 @@ struct ScfResult {
         occupations = json.doubles("occupations")
         dipole = Dipole(json.object("dipole") ?? JSONObject([:]))
         mulliken = MullikenAnalysis(json.object("mulliken") ?? JSONObject([:]))
+        npa = json.object("npa").map(NaturalPopulationAnalysis.init)
         mayer = json.object("mayer").map(MayerAnalysis.init)
         wallTimeMs = json.number("wallTimeMs") ?? 0
         log = json.value("log") as String? ?? ""
