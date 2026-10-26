@@ -19,6 +19,7 @@ struct ResultsView: View {
                     headline(result)
                     orbitalPanel(result)
                     chargesPanel(result)
+                    mayerPanel(result)
                     dipolePanel(result)
                     if let scan = model.scan {
                         scanPanel(scan)
@@ -201,6 +202,42 @@ struct ResultsView: View {
                         MetricRow(label: element, value: String(format: "%+.4f e", charge))
                     }
                 }
+            }
+        }
+    }
+
+    /// Mayer bond orders. Sorted strongest first, because a bond order is read
+    /// as "how many bonds is this", so the interesting entries are at the top.
+    @ViewBuilder
+    private func mayerPanel(_ result: ScfResult) -> some View {
+        Panel(title: L("results.mayer"), systemImage: "link") {
+            if let mayer = result.mayer, !mayer.bonds.isEmpty {
+                let sorted = mayer.bonds.sorted { $0.order > $1.order }
+                ForEach(sorted) { bond in
+                    MetricRow(
+                        label: bond.label,
+                        value: String(format: "%.4f", bond.order),
+                        emphasised: bond.order >= 0.5
+                    )
+                }
+                Divider()
+                MetricRow(
+                    label: L("results.mayer.sumRule"),
+                    value: String(format: "%.4f / %.0f", mayer.total, mayer.expectedTotal)
+                )
+                if !mayer.isValid {
+                    // The sum rule holds for any correct density, so a mismatch
+                    // means something upstream is wrong. Say so instead of
+                    // showing numbers that look fine.
+                    Label(L("results.mayer.sumMismatch"), systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Text(L("results.mayer.note"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(L("results.notAvailable")).font(.callout).foregroundStyle(.secondary)
             }
         }
     }

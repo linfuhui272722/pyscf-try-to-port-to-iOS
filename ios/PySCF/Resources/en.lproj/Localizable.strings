@@ -101,6 +101,10 @@
 "results.empty.title" = "No results yet";
 "results.engineLog" = "Engine log";
 "results.magnitude" = "Magnitude";
+"results.mayer" = "Mayer bond orders";
+"results.mayer.note" = "Open-shell references are spin-resolved. MP2 and CCSD report the orbitals of their SCF reference, so their bond orders match it.";
+"results.mayer.sumMismatch" = "Sum rule not satisfied - the bond orders may be wrong.";
+"results.mayer.sumRule" = "Sum rule (total / 2N)";
 "results.mulliken" = "Mulliken charges";
 "results.notAvailable" = "Not available for this method.";
 "results.orbitalEnergies" = "Orbital energies";

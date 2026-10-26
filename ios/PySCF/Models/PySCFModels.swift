@@ -409,6 +409,46 @@ struct MullikenAnalysis {
     }
 }
 
+/// One bond with its Mayer bond order.
+struct MayerBond: Identifiable, Hashable {
+    var i: Int
+    var j: Int
+    var a: String
+    var b: String
+    var order: Double
+
+    var id: String { "\(i)-\(j)" }
+    var label: String { "\(a)\(i + 1)-\(b)\(j + 1)" }
+
+    init(_ json: JSONObject) {
+        i = json.integer("i") ?? 0
+        j = json.integer("j") ?? 0
+        a = json.value("a") as String? ?? "?"
+        b = json.value("b") as String? ?? "?"
+        order = json.number("order") ?? 0
+    }
+}
+
+/// Mayer bond orders plus the sum rule that validates them.
+///
+/// ``total`` sums every B_AB over all atom pairs including the diagonal terms,
+/// and must equal ``expectedTotal`` (twice the electron count). The two are
+/// carried together so the UI can flag a mismatch rather than presenting a
+/// plausible-looking number that is actually wrong.
+struct MayerAnalysis {
+    var bonds: [MayerBond]
+    var total: Double
+    var expectedTotal: Double
+
+    var isValid: Bool { abs(total - expectedTotal) < 1e-4 }
+
+    init(_ json: JSONObject) {
+        bonds = json.objects("bonds").map(MayerBond.init)
+        total = json.number("total") ?? 0
+        expectedTotal = json.number("expectedTotal") ?? 0
+    }
+}
+
 /// Electron-density cube produced when ``include: ["grid"]`` is requested.
 ///
 /// ``values`` is flattened C-order over ``shape`` with x slowest and z fastest,
@@ -458,6 +498,7 @@ struct ScfResult {
     var occupations: [Double]
     var dipole: Dipole
     var mulliken: MullikenAnalysis
+    var mayer: MayerAnalysis?
     var wallTimeMs: Double
     var log: String
     var correlationEnergy: Double?
@@ -481,6 +522,7 @@ struct ScfResult {
         occupations = json.doubles("occupations")
         dipole = Dipole(json.object("dipole") ?? JSONObject([:]))
         mulliken = MullikenAnalysis(json.object("mulliken") ?? JSONObject([:]))
+        mayer = json.object("mayer").map(MayerAnalysis.init)
         wallTimeMs = json.number("wallTimeMs") ?? 0
         log = json.value("log") as String? ?? ""
         correlationEnergy = json.number("correlationEnergy")

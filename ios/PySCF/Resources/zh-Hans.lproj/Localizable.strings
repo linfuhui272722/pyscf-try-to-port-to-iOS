@@ -101,6 +101,10 @@
 "results.empty.title" = "暂无结果";
 "results.engineLog" = "引擎日志";
 "results.magnitude" = "大小";
+"results.mayer" = "Mayer 键级";
+"results.mayer.note" = "开壳层按自旋分辨计算。MP2 与 CCSD 显示的是其 SCF 参考态的轨道，故键级与之一致。";
+"results.mayer.sumMismatch" = "求和规则不满足——键级可能不正确。";
+"results.mayer.sumRule" = "求和规则（合计 / 2N）";
 "results.mulliken" = "Mulliken 电荷";
 "results.notAvailable" = "该方法不适用。";
 "results.orbitalEnergies" = "轨道能量";

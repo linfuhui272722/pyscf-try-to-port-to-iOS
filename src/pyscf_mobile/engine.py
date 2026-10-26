@@ -421,6 +421,79 @@ def _mulliken(mf, atoms: list[dict]) -> dict | None:
     }
 
 
+def _mayer_bond_orders(mf, atoms: list[dict]) -> dict | None:
+    """Mayer bond orders, keyed to the bonds the geometry already perceives.
+
+    Uses Mayer's 1986 spin-resolved definition,
+
+        B_AB = sum_{mu in A} sum_{nu in B} [ (P^S S)_mu,nu (P^S S)_nu,mu
+                                           + (P^A S)_mu,nu (P^A S)_nu,mu ]
+
+    with P^S = P^alpha + P^beta and P^A = P^alpha - P^beta, which is the form
+    that stays correct for open shells.  The commonly quoted closed-shell
+    simplification, taking PS = (P^alpha + P^beta) S and dropping the spin part,
+    is what most snippets show; for O2 it returns 1.50 against the correct 2.00,
+    and for superoxide 1.00 against 1.50, so the spin term is not optional here.
+    A restricted density has no spin part, and splitting it into equal alpha and
+    beta halves reproduces the closed-shell formula exactly.
+
+    Bond orders are only meaningful between atoms the geometry considers bonded,
+    so the output is filtered to ``geometry.perceive_bonds``.  That also drops
+    the diagonal terms and the 1,3 H...H contacts, which carry real but small
+    population that would otherwise swamp the display.
+    """
+    try:
+        dm = np.asarray(mf.make_rdm1(), dtype=float)
+        overlap = np.asarray(mf.get_ovlp(), dtype=float)
+    except Exception:
+        return None
+    if dm.ndim == 3:
+        alpha, beta = dm[0], dm[1]
+    elif dm.ndim == 2:
+        alpha = beta = dm / 2.0
+    else:
+        return None
+
+    spin_summed = (alpha + beta) @ overlap
+    spin_diff = (alpha - beta) @ overlap
+    # (PS)_mu,nu * (PS)_nu,mu for both spin channels, elementwise.
+    population = spin_summed * spin_summed.T + spin_diff * spin_diff.T
+
+    ranges = _ao_ranges(mf)
+    bonds = []
+    for i, j, _length in geometry.perceive_bonds(atoms):
+        # Only the (mu in A, nu in B) block is needed: the (nu, mu) half of the
+        # pair is its transpose, so summing one block covers both directions.
+        block = population[ranges[i][0] : ranges[i][1], ranges[j][0] : ranges[j][1]]
+        bonds.append(
+            {
+                "i": i,
+                "j": j,
+                "a": atoms[i]["element"],
+                "b": atoms[j]["element"],
+                "order": round(float(block.sum()), 6),
+            }
+        )
+
+    return {
+        "bonds": bonds,
+        "total": round(float(population.sum()), 6),
+        # Mayer's sum rule: every B_AB over all atom pairs, diagonal included,
+        # equals twice the electron count. A mismatch means the density or the
+        # overlap is wrong, so the UI shows it as a self-check.
+        "expectedTotal": 2 * int(mf.mol.nelectron),
+    }
+
+
+def _ao_ranges(mf) -> list[tuple[int, int]]:
+    """AO index range [start, stop) belonging to each atom, cached on the mol."""
+    ranges = getattr(mf.mol, "_mayer_ao_ranges", None)
+    if ranges is None:
+        ranges = [(int(s), int(e)) for _a, _b, s, e in mf.mol.aoslice_by_atom()]
+        mf.mol._mayer_ao_ranges = ranges
+    return ranges
+
+
 def _dipole(mf) -> dict | None:
     try:
         moment = mf.dip_moment(verbose=0)
@@ -525,9 +598,13 @@ def _electronic_structure(mf, atoms, include) -> dict:
         "gap": round(float(lumo - homo), 8) if homo is not None and lumo is not None else None,
         "orbitalEnergies": [round(float(e), 8) for e in mo_energy],
         "occupations": [round(float(o), 6) for o in mo_occ],
-        "dipole": _dipole(mf),
-        "mulliken": _mulliken(mf, atoms),
     }
+    if "_skip_population" not in include:
+        # The bond scan only reads the energy, so it asks for these to be left
+        # out rather than paying for three O(N^2) analyses per geometry.
+        result["dipole"] = _dipole(mf)
+        result["mulliken"] = _mulliken(mf, atoms)
+        result["mayer"] = _mayer_bond_orders(mf, atoms)
     if "mo" in include:
         result["moCoefficients"] = np.asarray(mf.mo_coeff, dtype=float).tolist()
     if "overlap" in include:
@@ -579,9 +656,16 @@ def _run_mean_field(params: dict, dm0=None):
     return mf, atoms, basis, method, buf.getvalue()
 
 
-def run_scf(params: dict) -> dict:
-    """Run a Hartree-Fock or Kohn-Sham calculation."""
+def run_scf(params: dict, full: bool = True) -> dict:
+    """Run a Hartree-Fock or Kohn-Sham calculation.
+
+    ``full=False`` skips the population analysis. The bond scan calls this once
+    per point and reads only the energy, so computing Mayer bond orders for
+    every geometry would add work whose result is discarded.
+    """
     include = {str(x).lower() for x in params.get("include", [])}
+    if not full:
+        include.add("_skip_population")
     start = time.perf_counter()
     mf, atoms, basis, method, log = _run_mean_field(params)
     wall_ms = (time.perf_counter() - start) * 1000.0
@@ -654,7 +738,7 @@ def run_bond_scan(params: dict) -> dict:
         single["atoms"] = shifted
         single["include"] = []
         try:
-            res = run_scf(single)
+            res = run_scf(single, full=False)
             points.append({"r": round(r, 4), "energy": res["energy"], "converged": res["converged"]})
         except Exception as exc:  # pragma: no cover - numerical edge cases
             points.append({"r": round(r, 4), "energy": None, "error": str(exc)})
