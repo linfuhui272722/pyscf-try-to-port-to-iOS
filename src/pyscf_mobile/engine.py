@@ -381,6 +381,7 @@ def _coerce_atoms(spec: Any) -> list[dict]:
 def _build_mol(atoms: list[dict], basis: str, charge: int, spin: int, unit: str = "Angstrom"):
     _require_pyscf()
     atom_block = [(a["element"], tuple(float(v) for v in a["xyz"])) for a in atoms]
+    _check_electrons(atoms, charge, spin)
     return gto.M(
         atom=atom_block,
         basis=basis,
@@ -390,6 +391,36 @@ def _build_mol(atoms: list[dict], basis: str, charge: int, spin: int, unit: str 
         verbose=0,
         output=None,
     )
+
+
+def _check_electrons(atoms: list[dict], charge: int, spin: int) -> None:
+    """Reject a charge/spin pair PySCF cannot satisfy, with a usable message.
+
+    PySCF raises its own error here, but it says "electron number and spin are
+    not consistent" without naming either number, and the two settings live in
+    separate steppers in the UI, so the user has no obvious way to tell which
+    one to change. Restating it with both values turns a puzzle into a fix.
+    """
+    electrons = sum(a["z"] for a in atoms) - int(charge)
+    if electrons < 0:
+        raise ValueError(
+            f"charge {charge:+d} removes more electrons than the {len(atoms)} atoms provide"
+        )
+    if (electrons - int(spin)) % 2 != 0:
+        # 2S = N_alpha - N_beta, and N_alpha + N_beta = N, so N and 2S must share
+        # a parity: an even electron count admits only even spin values.
+        # Suggest the neighbour that fixes the parity. Stepping down keeps the
+        # suggestion small, which is what a user almost always wants, and stays
+        # inside the range the stepper offers; stepping up is the fallback when
+        # there is no room below.
+        suggestion = spin - 1 if spin - 1 >= 0 else spin + 1
+        raise ValueError(
+            f"{electrons} electrons with 2S = {spin} is not a valid combination: "
+            f"{electrons} and {spin} must have the same parity. "
+            f"Use 2S = {suggestion} instead."
+        )
+    if int(spin) > electrons:
+        raise ValueError(f"2S = {spin} needs more than the {electrons} available electrons")
 
 
 def _homo_lumo(mo_energy, mo_occ):

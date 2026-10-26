@@ -141,6 +141,22 @@ struct BuilderView: View {
         }
     }
 
+    /// Charge and spin, plus the reason they cannot be used together.
+    ///
+    /// Grouped into one view rather than left inline: the panel's ViewBuilder is
+    /// at its ten-child limit, and the pair reads as a unit — the warning only
+    /// makes sense directly under both controls.
+    @ViewBuilder
+    private var chargeSpinControls: some View {
+        Stepper(LF("builder.charge", model.charge), value: $model.charge, in: -4...4)
+        Stepper(LF("builder.spin", model.spin), value: $model.spin, in: 0...4)
+        if let problem = model.chargeSpinProblem {
+            Label(problem, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+
     private var settingsPanel: some View {
         Panel(title: L("builder.calculation"), systemImage: "slider.horizontal.3") {
             Picker(L("builder.method"), selection: $model.calculation) {
@@ -165,8 +181,7 @@ struct BuilderView: View {
                 }
             }
 
-            Stepper(LF("builder.charge", model.charge), value: $model.charge, in: -4...4)
-            Stepper(LF("builder.spin", model.spin), value: $model.spin, in: 0...4)
+            chargeSpinControls
 
             if model.calculation == .optimise {
                 Stepper(LF("builder.maxSteps", model.maxOptimisationSteps),
@@ -233,7 +248,7 @@ struct BuilderView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(model.isBusy)
+            .disabled(model.isBusy || model.chargeSpinProblem != nil)
 
             if model.calculation == .scf {
                 Divider()
@@ -249,7 +264,8 @@ struct BuilderView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.isBusy || model.scanI == model.scanJ)
+                .disabled(model.isBusy || model.scanI == model.scanJ
+                          || model.chargeSpinProblem != nil)
             }
 
             if model.isBusy {

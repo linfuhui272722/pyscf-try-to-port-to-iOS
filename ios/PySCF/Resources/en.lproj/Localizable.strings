@@ -10,6 +10,9 @@
 "builder.bondScan" = "Bond scan";
 "builder.bonds" = "Bonds";
 "builder.calculation" = "Calculation";
+"builder.chargeSpin.parity" = "%d electrons with 2S = %d cannot pair up: both must have the same parity. Try 2S = %d.";
+"builder.chargeSpin.tooMany" = "Charge %+d removes more electrons than the molecule has.";
+"builder.chargeSpin.tooMuchSpin" = "2S = %d needs more than the %d electrons available.";
 "builder.charge" = "Charge: %d";
 "builder.compute" = "Compute %@";
 "builder.densityCube" = "Density cube (for the Density tab)";

@@ -146,18 +146,25 @@ struct PySCFEngine {
         }
     }
 
+    /// Runs DFT.
+    ///
+    /// A spin-polarised calculation needs the unrestricted driver, so ``method``
+    /// defaults to nil and is then chosen from ``spin``. Sending ``spin > 0`` to
+    /// the restricted driver does not produce a spin-polarised answer: the
+    /// density stays closed-shell and the spin setting is quietly ignored.
     func dft(
         atoms: String,
         functional: String = "b3lyp",
         basis: String = "sto-3g",
         charge: Int = 0,
         spin: Int = 0,
+        method: String? = nil,
         include: [String] = []
     ) async throws -> ScfResult {
         try await run {
             ScfResult(try call("dft", [
                 "atoms": atoms,
-                "method": "RKS",
+                "method": method ?? (spin > 0 ? "UKS" : "RKS"),
                 "xc": functional,
                 "basis": basis,
                 "charge": charge,
@@ -167,10 +174,18 @@ struct PySCFEngine {
         }
     }
 
+    /// Runs MP2 on top of the requested reference.
+    ///
+    /// ``charge`` and ``spin`` describe the molecule, not the correlation
+    /// treatment, so they must reach the reference SCF the same way they do for
+    /// a plain SCF run. They are separate from ``reference``, which selects the
+    /// reference wavefunction (RHF/UHF/ROHF).
     func mp2(
         atoms: String,
         reference: String = "RHF",
         basis: String = "sto-3g",
+        charge: Int = 0,
+        spin: Int = 0,
         include: [String] = []
     ) async throws -> ScfResult {
         try await run {
@@ -178,6 +193,8 @@ struct PySCFEngine {
                 "atoms": atoms,
                 "reference": reference,
                 "basis": basis,
+                "charge": charge,
+                "spin": spin,
                 "include": include,
             ]))
         }
@@ -187,6 +204,8 @@ struct PySCFEngine {
         atoms: String,
         reference: String = "RHF",
         basis: String = "sto-3g",
+        charge: Int = 0,
+        spin: Int = 0,
         include: [String] = []
     ) async throws -> ScfResult {
         try await run {
@@ -194,6 +213,8 @@ struct PySCFEngine {
                 "atoms": atoms,
                 "reference": reference,
                 "basis": basis,
+                "charge": charge,
+                "spin": spin,
                 "include": include,
             ]))
         }
@@ -240,6 +261,8 @@ struct PySCFEngine {
         j: Int,
         method: String = "RHF",
         basis: String = "sto-3g",
+        charge: Int = 0,
+        spin: Int = 0,
         steps: Int = 10,
         start: Double = 0.6,
         stop: Double = 2.5
@@ -251,6 +274,8 @@ struct PySCFEngine {
                 "j": j,
                 "method": method,
                 "basis": basis,
+                "charge": charge,
+                "spin": spin,
                 "steps": steps,
                 "start": start,
                 "stop": stop,

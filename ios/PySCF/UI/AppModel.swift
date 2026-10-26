@@ -167,6 +167,47 @@ final class AppModel: ObservableObject {
     private let engine = PySCFEngine()
     private var didBootstrap = false
 
+    // MARK: - Charge and spin
+
+    /// Electrons the current molecule would have, or nil while the geometry has
+    /// not parsed yet.
+    var electronCount: Int? {
+        guard let geometry = geometry, !geometry.atoms.isEmpty else { return nil }
+        let bySymbol = Dictionary(uniqueKeysWithValues: elements.map { ($0.symbol, $0.z) })
+        var total = 0
+        for atom in geometry.atoms {
+            guard let z = bySymbol[atom.element] else { return nil }
+            total += z
+        }
+        return total - charge
+    }
+
+    /// Why the current charge and spin cannot be used together, or nil if they
+    /// are fine.
+    ///
+    /// The engine rejects the same combinations, but it only gets a chance once
+    /// the user presses Compute. Checking here lets the reason appear under the
+    /// controls that cause it, before the run is attempted. PySCF's own message
+    /// names neither number, which is what makes the pair hard to fix blind.
+    var chargeSpinProblem: String? {
+        guard let electrons = electronCount else { return nil }
+        if electrons < 0 {
+            return LF("builder.chargeSpin.tooMany", charge)
+        }
+        if (electrons - spin) % 2 != 0 {
+            // 2S = N_alpha - N_beta and N_alpha + N_beta = N, so N and 2S share
+            // a parity: the allowed spin values are the ones matching N.
+            // Mirrors the engine's suggestion, stepping down where possible so
+            // the value stays inside the stepper's range.
+            let suggestion = spin - 1 >= 0 ? spin - 1 : spin + 1
+            return LF("builder.chargeSpin.parity", electrons, spin, suggestion)
+        }
+        if spin > electrons {
+            return LF("builder.chargeSpin.tooMuchSpin", spin, electrons)
+        }
+        return nil
+    }
+
     // MARK: - Bootstrap
 
     /// Boots Python and loads the static tables.  Safe to call repeatedly.
@@ -350,11 +391,11 @@ final class AppModel: ObservableObject {
             case .mp2:
                 output = try await engine.mp2(
                     atoms: spec, reference: spin > 0 ? "ROHF" : "RHF",
-                    basis: basis, include: include)
+                    basis: basis, charge: charge, spin: spin, include: include)
             case .ccsd:
                 output = try await engine.ccsd(
                     atoms: spec, reference: spin > 0 ? "ROHF" : "RHF",
-                    basis: basis, include: include)
+                    basis: basis, charge: charge, spin: spin, include: include)
             }
             result = output
             scan = nil
@@ -380,7 +421,8 @@ final class AppModel: ObservableObject {
         do {
             let output = try await engine.bondScan(
                 atoms: atomSpec, i: scanI, j: scanJ,
-                method: spin > 0 ? "ROHF" : "RHF", basis: basis)
+                method: spin > 0 ? "ROHF" : "RHF", basis: basis,
+                charge: charge, spin: spin)
             scan = output
             optimisation = nil
             screen = .results
@@ -402,7 +444,7 @@ final class AppModel: ObservableObject {
         defer { isBusy = false }
         do {
             let output = try await engine.optimise(
-                atoms: atomSpec, method: "RKS", basis: basis, xc: functional,
+                atoms: atomSpec, method: spin > 0 ? "UKS" : "RKS", basis: basis, xc: functional,
                 charge: charge, spin: spin, maxSteps: maxOptimisationSteps,
                 gridLevel: relaxationAccuracy.gridLevel,
                 relaxGridLevel: relaxationAccuracy.forcesProductionGrid

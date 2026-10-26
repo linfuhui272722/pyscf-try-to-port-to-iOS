@@ -25,6 +25,7 @@ MODULES = [
     "test_shims.py",
     "test_threads.py",
     "test_mayer.py",
+    "test_charge_spin.py",
 ]
 
 # Imports the module and calls every top-level test_* function, in one process.

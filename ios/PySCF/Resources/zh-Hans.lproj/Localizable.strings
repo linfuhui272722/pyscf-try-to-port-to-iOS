@@ -10,6 +10,9 @@
 "builder.bondScan" = "键扫描";
 "builder.bonds" = "键长";
 "builder.calculation" = "计算设置";
+"builder.chargeSpin.parity" = "%d 个电子与 2S = %d 无法配对：两者奇偶性必须相同。可试试 2S = %d。";
+"builder.chargeSpin.tooMany" = "电荷 %+d 移除了超过分子实际拥有的电子。";
+"builder.chargeSpin.tooMuchSpin" = "2S = %d 需要的电子多于现有的 %d 个。";
 "builder.charge" = "电荷：%d";
 "builder.compute" = "计算 %@";
 "builder.densityCube" = "密度立方体（供“密度”页使用）";
