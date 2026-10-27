@@ -126,6 +126,13 @@
 "screen.table" = "Elements";
 "builder.maxSteps" = "Max relaxation steps";
 "builder.accuracy" = "Relaxation accuracy";
+"builder.densityFit" = "Density fitting";
+"densityFit.automatic" = "Auto";
+"densityFit.on" = "On";
+"densityFit.off" = "Off";
+"densityFit.automatic.blurb" = "Let the engine decide from the basis size. It fits integrals only once the auxiliary basis is repaid, which for a small molecule is never.";
+"densityFit.on.blurb" = "Always approximate the two-electron integrals. Faster for a large basis, and a large slow-down for a small one.";
+"densityFit.off.blurb" = "Always use exact integrals. Slower for a large basis, and the way to check that a fitted result is trustworthy.";
 "accuracy.fast" = "Fast";
 "accuracy.balanced" = "Balanced";
 "accuracy.precise" = "Precise";

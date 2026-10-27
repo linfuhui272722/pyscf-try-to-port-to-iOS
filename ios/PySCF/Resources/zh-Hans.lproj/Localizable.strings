@@ -126,6 +126,13 @@
 "screen.table" = "元素";
 "builder.maxSteps" = "最大优化步数";
 "builder.accuracy" = "优化精度";
+"builder.densityFit" = "密度拟合";
+"densityFit.automatic" = "自动";
+"densityFit.on" = "开启";
+"densityFit.off" = "关闭";
+"densityFit.automatic.blurb" = "由引擎按基组大小决定。只有辅助基组值得开销时才启用；小分子永远不会。";
+"densityFit.on.blurb" = "始终近似双电子积分。大基组下更快，小基组下会明显变慢。";
+"densityFit.off.blurb" = "始终使用精确积分。大基组下更慢，但可用于核对拟合结果是否可信。";
 "accuracy.fast" = "快速";
 "accuracy.balanced" = "均衡";
 "accuracy.precise" = "精确";

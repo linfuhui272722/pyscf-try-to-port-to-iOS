@@ -345,6 +345,21 @@ SciPy/h5py, and that global state leaks into `test_engine.py`. `run_tests.py`
 therefore runs each module in its own interpreter. Do not merge them into one
 process.
 
+A shim routine is only covered when a test calls it with the shims installed.
+The host has the real SciPy, so anything the engine reaches through `scipy` runs
+against the real thing unless the test explicitly forces the vendored copy --
+and then the failure appears on a device, not in CI. The `trsm` bug that broke
+density fitting on iOS was invisible for exactly this reason: the DF builder is
+its only caller, and no shim test exercised DF. Any new shim routine needs a
+comparison against the real SciPy *and* a test that drives the engine path which
+uses it, both with the shims forced in.
+
+Watch for f2py conventions when reimplementing a BLAS/LAPACK wrapper. SciPy's
+`trsm`, for instance, selects the triangle from `a` before applying the
+transpose and solves on the right (`alpha * b @ inv(op(a))`); the naive reading
+returns a plausible-looking array for a square operand and only falls over when
+`b` is non-square, which is what a blocked integral build produces.
+
 ## Geometry optimisation
 
 The app relaxes geometries with `src/pyscf_mobile/geomopt.py`, not with PySCF's

@@ -194,6 +194,15 @@ struct BuilderView: View {
                 .pickerStyle(.segmented)
                 Text(model.relaxationAccuracy.blurb)
                     .font(.caption2).foregroundStyle(.secondary)
+
+                Picker(L("builder.densityFit"), selection: $model.densityFit) {
+                    ForEach(DensityFitChoice.allCases) { choice in
+                        Text(choice.label).tag(choice)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(model.densityFit.blurb)
+                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             if model.calculation == .scf || model.calculation == .dft {

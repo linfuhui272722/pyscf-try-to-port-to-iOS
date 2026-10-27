@@ -421,22 +421,33 @@ def get_blas_funcs(names, arrays=None, **kwargs):
 
 
 def _trsm(alpha, a, b, lower=False, trans_a=0, side=1, overwrite_b=False, **kwargs):
-    """Solve a triangular system ``op(a) x = alpha b`` (LAPACK TRSM).
+    """Solve a triangular system, matching SciPy's ``trsm`` wrapper.
 
-    Only the shapes SciPy is called with in PySCF are supported: ``side=1``
-    (left) and ``trans_a=1``.
+    SciPy exposes LAPACK's ``TRSM`` through f2py, and the two conventions that
+    matter are easy to get backwards:
+
+    * the triangle is selected from ``a`` *before* the transpose is applied, so
+      ``lower=True, trans_a=1`` means ``tril(a).T`` and not ``tril(a.T)`` -- the
+      latter is the diagonal alone whenever ``a`` is already triangular, which
+      silently destroys the matrix;
+    * the result is ``alpha * b @ inv(op(a))``, a right solve, because f2py
+      presents the operand in column-major order and the caller transposes it
+      back.
+
+    ``pyscf/df/incore.py`` calls this as
+    ``trsm(1.0, low, ints.T, lower=True, trans_a=1).T`` and expects
+    ``solve(low, ints)``, which is what the two conventions above produce.
+
+    Only ``side=1`` is implemented; it is the only value PySCF passes.
     """
     a = _asarray(a)
     b = _asarray(b)
+    op = np.tril(a) if lower else np.triu(a)
     if trans_a == 1:
-        a = a.T
+        op = op.T
     elif trans_a == 2:
-        a = a.conj().T
-    if lower:
-        a = np.tril(a)
-    else:
-        a = np.triu(a)
-    return alpha * np.linalg.solve(a, b)
+        op = op.conj().T
+    return alpha * np.linalg.solve(op.T, b.T).T
 
 
 def _scal(alpha, x, **kwargs):

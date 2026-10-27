@@ -105,6 +105,12 @@ fixtures = {
     "optimise_df": call("optimise", {"atoms": "O 0 0 0; H 0 0 1.30; H 0 1.10 -0.30",
                                      "method": "RHF", "basis": "6-31g",
                                      "maxSteps": 30, "densityFit": True}),
+    # Explicitly off, on a molecule large enough that the engine would otherwise
+    # turn it on.  A ``false`` here has to survive as a decision rather than be
+    # read as "unset", which is the difference the UI's three-way choice makes.
+    "optimise_no_df": call("optimise", {"atoms": "O 0 0 0; H 0 0 1.30; H 0 1.10 -0.30",
+                                        "method": "RHF", "basis": "6-31g",
+                                        "maxSteps": 30, "densityFit": False}),
     "error": call("scf", {"atoms": "Xx 0 0 0", "basis": "sto-3g"}),
 }
 

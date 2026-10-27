@@ -84,6 +84,48 @@ enum RelaxationAccuracy: String, CaseIterable, Identifiable {
     }
 }
 
+/// Whether a geometry relaxation approximates its two-electron integrals.
+///
+/// Density fitting replaces the four-centre integrals a relaxation is built from
+/// with three-centre ones against an auxiliary basis, which is a large win once
+/// the basis is big enough to make those integrals the bottleneck and a loss
+/// below that, where the auxiliary-basis setup is not repaid. The crossover
+/// depends on the molecule and the device, so the engine's automatic choice is
+/// offered as one option rather than being the only one.
+enum DensityFitChoice: String, CaseIterable, Identifiable {
+    case automatic
+    case on
+    case off
+
+    var id: String { rawValue }
+
+    /// Passed to the engine as `densityFit`; `nil` means "decide from the basis
+    /// size", which is what the engine does when the key is absent.
+    var requested: Bool? {
+        switch self {
+        case .automatic: return nil
+        case .on: return true
+        case .off: return false
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .automatic: return L("densityFit.automatic")
+        case .on: return L("densityFit.on")
+        case .off: return L("densityFit.off")
+        }
+    }
+
+    var blurb: String {
+        switch self {
+        case .automatic: return L("densityFit.automatic.blurb")
+        case .on: return L("densityFit.on.blurb")
+        case .off: return L("densityFit.off.blurb")
+        }
+    }
+}
+
 /// Navigation destinations for the iPad/iPhone split view.
 enum Screen: String, CaseIterable, Identifiable {
     case builder = "Builder"
@@ -128,6 +170,7 @@ final class AppModel: ObservableObject {
     @Published var scanJ: Int = 1
     @Published var maxOptimisationSteps: Int = 40
     @Published var relaxationAccuracy: RelaxationAccuracy = .balanced
+    @Published var densityFit: DensityFitChoice = .automatic
 
     /// OpenMP thread count, or nil for "let the runtime decide". Mirrored into
     /// UserDefaults so the choice survives a relaunch: it is a preference about
@@ -449,6 +492,7 @@ final class AppModel: ObservableObject {
                 gridLevel: relaxationAccuracy.gridLevel,
                 relaxGridLevel: relaxationAccuracy.forcesProductionGrid
                     ? relaxationAccuracy.gridLevel : relaxationAccuracy.relaxGridLevel,
+                densityFit: densityFit.requested,
                 include: include)
             optimisation = output
             scan = nil

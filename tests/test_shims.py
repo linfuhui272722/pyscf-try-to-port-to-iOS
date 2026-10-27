@@ -386,3 +386,83 @@ def test_ccsd_runs_on_the_shims_and_exercises_the_h5py_temp_files():
         "reference": "RHF",
     })
     assert abs(result["correlationEnergy"] - (-0.0488641187)) < 1e-8
+
+
+def test_trsm_matches_scipy():
+    """``get_blas_funcs(('trsm',))`` is the DF path's linear solve.
+
+    SciPy's wrapper is f2py-generated, so its conventions do not match a naive
+    reading: the triangle is taken from ``a`` *before* the transpose, and the
+    result is a right solve.  Getting either backwards still returns an array
+    of the right shape for a square operand, so only a non-square ``b`` -- which
+    is what a blocked integral build produces -- exposes it.
+    """
+    real = _real_scipy()
+    if real is None:
+        return  # nothing to compare against on a device
+    my = _vendored().linalg
+    rng = np.random.default_rng(1234)
+
+    for naux in (1, 2, 4, 7, 13):
+        for nrow in (1, 3, naux, 2 * naux + 1):
+            a = rng.random((naux, naux))
+            low = np.linalg.cholesky(a @ a.T + np.eye(naux) * 5)
+            for lower in (True, False):
+                operand = low if lower else low.T
+                for trans_a in (0, 1):
+                    b = rng.random((nrow, naux))
+                    want, = real.linalg.get_blas_funcs(("trsm",), (operand, b))
+                    got, = my.get_blas_funcs(("trsm",), (operand, b))
+                    # overwrite_b is destructive, so both sides get a copy.
+                    expected = want(1.0, operand, b.copy(), lower=lower,
+                                    trans_a=trans_a, side=1, overwrite_b=True)
+                    result = got(1.0, operand, b.copy(), lower=lower,
+                                 trans_a=trans_a, side=1, overwrite_b=True)
+                    assert np.allclose(expected, result), (
+                        naux, nrow, lower, trans_a)
+
+
+def test_trsm_agrees_with_solve_triangular_on_the_pyscf_call():
+    """The two branches of PySCF's blocked build must agree.
+
+    ``pyscf/df/incore.py`` picks ``trsm`` for C-contiguous blocks and
+    ``solve_triangular`` otherwise.  If they disagree the result depends on
+    memory layout, which is how the transposed-triangle bug reached a device.
+    """
+    my = _vendored().linalg
+    rng = np.random.default_rng(7)
+
+    for naux, nrow in ((13, 40), (60, 200), (348, 1485)):
+        a = rng.random((naux, naux))
+        low = np.linalg.cholesky(a @ a.T + np.eye(naux) * 5)
+        ints = rng.random((naux, nrow))
+
+        trsm, = my.get_blas_funcs(("trsm",), (low, ints))
+        via_trsm = trsm(1.0, low, ints.T, lower=True, trans_a=1,
+                        side=1, overwrite_b=True).T
+        via_solve = my.solve_triangular(low, ints, lower=True,
+                                        check_finite=False)
+        assert via_trsm.shape == via_solve.shape
+        assert np.allclose(via_trsm, via_solve)
+
+
+def test_density_fitting_runs_on_the_shims():
+    """Density fitting must work with the vendored SciPy, not just the host's.
+
+    This is the case that failed on device: the DF builder is the only caller
+    of ``trsm``, and every other shim test uses routines the host SciPy also
+    provides, so a broken ``trsm`` passed the whole suite.
+    """
+    _vendored()
+    from pyscf_mobile import engine
+
+    result = engine.run_geometry_optimisation({
+        "atoms": "O 0 0 0; H 0 0 1.30; H 0 1.10 -0.30",
+        "method": "RHF",
+        "basis": "6-31g",
+        "maxSteps": 20,
+        "densityFit": True,
+    })
+    assert result["converged"]
+    # Reference from the host SciPy with the same request.
+    assert abs(result["energy"] - (-75.985355)) < 1e-5

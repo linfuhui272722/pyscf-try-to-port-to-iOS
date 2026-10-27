@@ -204,6 +204,21 @@ do {
     expect(fitted.optimisedAtoms.contains("O"), "optimised geometry reported")
 }
 
+print("optimise with density fitting explicitly off")
+do {
+    // ``false`` has to be carried through as a decision rather than dropped and
+    // read as "unset".  The two runs sit on different surfaces -- that offset is
+    // the point of offering the choice -- so the energies must differ.
+    let exact = OptimisationResult(fixture("optimise_no_df"))
+    let fitted = OptimisationResult(fixture("optimise_df"))
+    expect(exact.converged, "exact-integral relaxation converged")
+    expect(abs(exact.energy - fitted.energy) > 1e-6,
+           "explicitly-off run differs from the fitted one "
+           + "(\(exact.energy) vs \(fitted.energy))")
+    expect(exact.maxGradient < exact.convTolGrad * 10,
+           "exact gradient reached the threshold (\(exact.maxGradient))")
+}
+
 print("optimise")
 do {
     let optimisation = OptimisationResult(fixture("optimise"))
