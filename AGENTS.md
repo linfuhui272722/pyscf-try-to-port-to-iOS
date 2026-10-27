@@ -456,13 +456,30 @@ Release assets keep the fixed name `PySCF-beta-1.0-unsigned.ipa` regardless of
 version, matching the earlier releases; the tag distinguishes them. `ipa.sha256`
 goes up alongside.
 
-To publish:
+To publish, in this order. The rebuild is the step to not skip: the app bundle
+carries its own copy of `pyscf_mobile` under
+`PySCF.app/python/lib/python3.13/site-packages/`, so a source change that is
+committed but not rebuilt ships an IPA containing the *old* Python while every
+test still passes. Check the fix reached the bundle before packaging:
 
 ```
-GH_TOKEN=<token> python3 - <<'PY'
-...  # POST /repos/{repo}/releases, then POST to uploads.github.com for each asset
-PY
+scripts/build-ios-app.sh
+scripts/validate-ios-app.sh
+diff build/products/ios-arm64/PySCF.app/python/lib/python3.13/site-packages/pyscf_mobile/engine.py src/pyscf_mobile/engine.py
+scripts/package-ipa.sh build/products/ios-arm64/PySCF.app <out.ipa>
+sha256sum <out.ipa> > ipa.sha256
+git tag -a ios-v1.0.0-beta.N -m "..." && git push origin ios-v1.0.0-beta.N
 ```
+
+The `diff` must be empty. Then create the release over the API -- POST to
+`/repos/{repo}/releases` with `prerelease: true` -- and upload both assets to
+`https://uploads.github.com/repos/{repo}/releases/{id}/assets?name=...`. Read
+the release back afterwards and check both assets report `uploaded`; the upload
+endpoint returns before the asset is servable.
+
+A tag on its own publishes nothing. A release needs the tag, the IPA, and the
+sha256; a tag without a release leaves the version with no downloadable
+artifact.
 
 The IPA is unsigned and ad-hoc signed internally, so it needs a sideloading tool
 or a self-signed certificate on the device.
