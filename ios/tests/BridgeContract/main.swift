@@ -192,6 +192,18 @@ do {
     expect(scan.label.contains("O"), "scan label names the bond (\(scan.label))")
 }
 
+print("optimise with density fitting")
+do {
+    // Forced on for a molecule below the automatic threshold.  The override has
+    // to survive the request and the relaxation still has to converge on the
+    // same surface, so the gradient threshold is the check that matters.
+    let fitted = OptimisationResult(fixture("optimise_df"))
+    expect(fitted.converged, "density-fitted relaxation converged")
+    expect(fitted.maxGradient < fitted.convTolGrad * 10,
+           "density-fitted gradient reached the threshold (\(fitted.maxGradient))")
+    expect(fitted.optimisedAtoms.contains("O"), "optimised geometry reported")
+}
+
 print("optimise")
 do {
     let optimisation = OptimisationResult(fixture("optimise"))

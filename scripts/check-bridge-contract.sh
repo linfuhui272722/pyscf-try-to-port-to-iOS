@@ -99,6 +99,12 @@ fixtures = {
     "optimise": call("optimise", {"atoms": "O 0 0 0; H 0 0 1.30; H 0 1.10 -0.30",
                                   "method": "RKS", "xc": "b3lyp", "basis": "sto-3g",
                                   "maxSteps": 30, "include": ["mo"]}),
+    # Density fitting, forced on for a molecule that would not select it.  The
+    # engine decides from the basis-function count by default; this proves the
+    # explicit override travels through the bridge and still converges.
+    "optimise_df": call("optimise", {"atoms": "O 0 0 0; H 0 0 1.30; H 0 1.10 -0.30",
+                                     "method": "RHF", "basis": "6-31g",
+                                     "maxSteps": 30, "densityFit": True}),
     "error": call("scf", {"atoms": "Xx 0 0 0", "basis": "sto-3g"}),
 }
 

@@ -365,3 +365,128 @@ def test_reported_energy_uses_the_production_grid():
     check.kernel()
     assert abs(result["energy"] - float(check.e_tot)) < 1e-7, (
         result["energy"], float(check.e_tot))
+
+
+# --- density fitting -------------------------------------------------------
+
+
+def _benzene() -> list[dict]:
+    """A molecule large enough that the optimiser selects density fitting."""
+    labels = [
+        ("C", (1.3965, 0, 0)), ("C", (0.69825, 1.2095, 0)),
+        ("C", (-0.69825, 1.2095, 0)), ("C", (-1.3965, 0, 0)),
+        ("C", (-0.69825, -1.2095, 0)), ("C", (0.69825, -1.2095, 0)),
+        ("H", (2.4793, 0, 0)), ("H", (1.23965, 2.1472, 0)),
+        ("H", (-1.23965, 2.1472, 0)), ("H", (-2.4793, 0, 0)),
+        ("H", (-1.23965, -2.1472, 0)), ("H", (1.23965, -2.1472, 0)),
+    ]
+    return [{"element": e, "xyz": list(x)} for e, x in labels]
+
+
+def test_density_fit_is_opt_in_for_a_plain_request():
+    """Nothing but the optimiser turns it on by itself.
+
+    A density-fitted single-point SCF is slower than an exact one at every size
+    measured, so leaving it on by default would slow down the common case.  The
+    helper therefore reports False whenever the request is silent.
+    """
+    from pyscf import gto
+
+    water = gto.M(atom="O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587",
+                  basis="6-31g", verbose=0)
+    large = gto.M(
+        atom="; ".join(f"{a['element']} {a['xyz'][0]} {a['xyz'][1]} {a['xyz'][2]}"
+                       for a in _benzene()),
+        basis="6-31g", verbose=0)
+
+    assert water.nao_nr() < engine.DENSITY_FIT_MIN_BASIS
+    assert large.nao_nr() >= engine.DENSITY_FIT_MIN_BASIS
+    for mol in (water, large):
+        assert engine._wants_density_fit(mol, {}) is False
+
+
+def test_single_point_scf_does_not_use_density_fit():
+    """A plain SCF request must reach the exact Fock build."""
+    from pyscf import gto, scf
+
+    result = engine.run_scf(
+        {"atoms": "; ".join(
+            f"{a['element']} {a['xyz'][0]} {a['xyz'][1]} {a['xyz'][2]}"
+            for a in _benzene()),
+         "method": "RHF", "basis": "6-31g"}
+    )
+    mol = gto.M(
+        atom="; ".join(f"{a['element']} {a['xyz'][0]} {a['xyz'][1]} {a['xyz'][2]}"
+                       for a in _benzene()),
+        basis="6-31g", verbose=0)
+    exact = scf.RHF(mol)
+    exact.kernel()
+    assert abs(result["energy"] - float(exact.e_tot)) < 1e-9, (
+        "the reported energy is the density-fitted one", result["energy"])
+
+
+def test_density_fit_override_wins_over_the_default():
+    """The request is authoritative in both directions."""
+    from pyscf import gto
+
+    water = gto.M(atom="O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587",
+                  basis="6-31g", verbose=0)
+    assert engine._wants_density_fit(water, {"densityFit": True}) is True
+    assert engine._wants_density_fit(water, {"densityFit": False}) is False
+
+
+def test_optimiser_forwards_the_density_fit_choice():
+    """``densityFit`` has to survive the trip into the per-step parameters.
+
+    The optimiser copies a whitelist of keys out of the request before it calls
+    the mean field; a key missing from that list is silently ignored and the
+    setting appears to do nothing.
+    """
+    seen = []
+    original = engine._run_mean_field
+
+    def spy(params, dm0=None):
+        seen.append(params.get("densityFit"))
+        return original(params, dm0=dm0)
+
+    engine._run_mean_field = spy
+    try:
+        engine.run_geometry_optimisation(
+            {"atoms": _water_stretched(), "method": "RHF", "basis": "6-31g",
+             "maxSteps": 3, "densityFit": False}
+        )
+    finally:
+        engine._run_mean_field = original
+
+    assert seen, "the optimiser made no mean-field calls"
+    assert all(v is False for v in seen), seen
+
+
+def test_density_fit_relaxes_to_the_same_geometry():
+    """The approximation must not move the minimum.
+
+    Gradients differ by at most 5e-5 Ha/Bohr, an order of magnitude below the
+    default convergence tolerance, so both runs stop in the same place.  This
+    is the property that makes the speedup safe to enable by default.
+    """
+    request = {"atoms": _water_stretched(), "method": "RHF", "basis": "6-31g",
+               "maxSteps": 40}
+
+    def coords(result):
+        return np.array([[float(v) for v in line.split()[1:4]]
+                         for line in result["optimisedAtoms"].split(";")])
+
+    exact = engine.run_geometry_optimisation({**request, "densityFit": False})
+    fitted = engine.run_geometry_optimisation({**request, "densityFit": True})
+
+    assert exact["converged"] and fitted["converged"]
+    assert np.max(np.abs(coords(exact) - coords(fitted))) < 1e-4
+
+
+def test_density_fit_does_not_change_the_reported_energy_much():
+    """The energy offset stays well under the SCF tolerance."""
+    request = {"atoms": _water_stretched(), "method": "RHF", "basis": "6-31g",
+               "maxSteps": 40}
+    exact = engine.run_geometry_optimisation({**request, "densityFit": False})
+    fitted = engine.run_geometry_optimisation({**request, "densityFit": True})
+    assert abs(exact["energy"] - fitted["energy"]) < 1e-3

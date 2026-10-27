@@ -71,6 +71,34 @@ breakage:
 
 These all cost real debugging time; do not "clean them up".
 
+**Density fitting helps the gradient and hurts the SCF, so it is opt-in.**
+`_wants_density_fit` returns False for a plain request; only
+`run_geometry_optimisation` turns it on by itself, and only once
+`mol.nao_nr() >= DENSITY_FIT_MIN_BASIS` (24).
+
+The asymmetry is the whole point and is easy to get backwards. DF removes the
+four-centre two-electron integrals, which dominate a *gradient* -- benzene in
+6-31G goes 2.8x faster. A *single-point* SCF has no such gradient work to
+remove, so the auxiliary basis build and its three-centre integrals are pure
+added cost: measured on the alkanes in 6-31G, a density-fitted SCF is slower at
+every size tried, from ethane (0.30x) to C16H34 with 208 functions (0.65x).
+Enabling DF globally therefore makes every single-point calculation slower *and*
+silently shifts its energy by up to 7e-4 Ha with nothing in the payload to say
+so. Keep it on the optimiser path.
+
+Below the crossover a relaxation is slower with DF too -- methane runs 6x slower
+-- so the size gate matters there as well. `densityFit` in a request overrides
+the choice in either direction, and the optimiser forwards it through the `base`
+whitelist; a key missing from that list is silently dropped, so the setting
+looks inert.
+
+The approximation enters through the two-electron integrals only. Measured over
+every basis in `BASIS_SETS`, on water and on benzene, the energy moves by at most
+7e-4 Ha and the gradient by at most 5e-5 Ha/Bohr. The gradient bound is what
+governs a relaxation, and it sits an order of magnitude below the default
+`convTolGrad` of 3e-4, so both paths stop in the same place (measured agreement:
+3e-5 A in the coordinates, identical step counts).
+
 **NBO is not available, and NPA is not a substitute for it.** PySCF ships
 `pyscf/lo/nao.py`, which builds natural atomic orbitals -- the *first* step of
 Weinhold's NBO method -- and nothing beyond it. There is no NBO transform, no

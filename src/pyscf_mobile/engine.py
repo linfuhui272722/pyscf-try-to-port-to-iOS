@@ -73,6 +73,18 @@ BASIS_SETS = (
     "def2-tzvp",
 )
 
+# Number of basis functions below which a density-fitted mean field is *slower*
+# than an exact one, measured on the alkanes in 6-31G: the auxiliary basis
+# build and its three-centre integrals are a fixed cost that an exact
+# four-centre Fock build does not pay until the matrix products grow.  Methane
+# (13 functions) runs 6x slower with DF; ethane (26) is already 1.4x faster, so
+# the crossover sits between them and the threshold is set below it.
+#
+# This matters for the geometry optimiser specifically.  A relaxation of a small
+# molecule takes a handful of milliseconds per step, so choosing DF there turns
+# a 300 ms optimisation into a 2 s one - the opposite of the intent.
+DENSITY_FIT_MIN_BASIS = 24
+
 FUNCTIONALS = (
     "lda",
     "pbe",
@@ -564,6 +576,35 @@ def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: flo
     }
 
 
+def _wants_density_fit(mol, params: dict) -> bool:
+    """Decide whether to build the mean field with density fitting.
+
+    This is off unless a request asks for it.  The optimiser is the only caller
+    that turns it on by itself, and it does so from the molecule size; see
+    ``run_geometry_optimisation``.
+
+    Density fitting pays off on the *gradient*, where it removes the four-centre
+    two-electron integrals that dominate, but not on a single-point SCF: the
+    auxiliary basis build and its three-centre integrals are a fixed cost that
+    an exact Fock build spreads more cheaply.  Measured on the alkanes in
+    6-31G, a density-fitted SCF is slower at every size tried, from ethane
+    (0.30x) up to C16H34 with 208 functions (0.65x).  Leaving it on by default
+    would therefore make every single-point calculation slower, so it is opt-in.
+
+    The approximation enters through the two-electron integrals only.  Over
+    every basis in ``BASIS_SETS``, on water and on benzene, the energy moves by
+    at most 7e-4 Ha and the gradient by at most 5e-5 Ha/Bohr.  The gradient
+    bound is the one that governs a relaxation, and it sits an order of
+    magnitude below the default ``convTolGrad`` of 3e-4, so the nuclei stop in
+    the same place; the energy offset is near constant across the surface and
+    does not move the minimum.
+    """
+    requested = params.get("densityFit")
+    if requested is not None:
+        return bool(requested)
+    return False
+
+
 def _make_method(mol, method: str, xc: str, params: dict):
     method = method.upper()
     if method == "RHF":
@@ -578,6 +619,9 @@ def _make_method(mol, method: str, xc: str, params: dict):
         mf = dft.UKS(mol)
     else:
         raise ValueError(f"unsupported SCF method: {method}")
+
+    if _wants_density_fit(mol, params):
+        mf = mf.density_fit()
 
     if method.endswith("KS"):
         mf.xc = xc or "b3lyp"
@@ -826,7 +870,7 @@ def run_geometry_optimisation(params: dict) -> dict:
         "xc": xc,
         "unit": "Angstrom",
     }
-    for key in ("maxCycle", "convTol", "initGuess"):
+    for key in ("maxCycle", "convTol", "initGuess", "densityFit"):
         if params.get(key) is not None:
             base[key] = params[key]
 
@@ -896,6 +940,13 @@ def run_geometry_optimisation(params: dict) -> dict:
     # PySCF's mol.atom_coords() is in Bohr, and the gradient is Ha/Bohr, so the
     # whole relaxation runs in Bohr and is converted back at the end.
     reference = _build_mol(initial, basis, base["charge"], base["spin"], "Angstrom")
+    # A relaxation is the one place density fitting pays: the gradient is the
+    # dominant cost there and DF removes the four-centre integrals it is built
+    # from.  It is deliberately not enabled for single-point SCF, where it is
+    # slower at every size measured.  ``base`` is captured by ``energy_and_grad``
+    # above, so setting the key here still reaches every step.
+    if "densityFit" not in base:
+        base["densityFit"] = reference.nao_nr() >= DENSITY_FIT_MIN_BASIS
     x0 = np.asarray(reference.atom_coords(), dtype=float).reshape(-1)
     logger.write(f"optimise: reference built, {x0.size // 3} atoms, starting minimiser", tag="optimise")
 

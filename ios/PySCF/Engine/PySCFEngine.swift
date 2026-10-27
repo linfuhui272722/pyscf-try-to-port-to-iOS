@@ -234,6 +234,7 @@ struct PySCFEngine {
         maxSteps: Int = 40,
         gridLevel: Int? = nil,
         relaxGridLevel: Int? = nil,
+        densityFit: Bool? = nil,
         include: [String] = []
     ) async throws -> OptimisationResult {
         var payload: [String: Any] = [
@@ -250,6 +251,10 @@ struct PySCFEngine {
         // coarse relaxation grid plus a production-grid refinement.
         if let level = gridLevel { payload["gridLevel"] = level }
         if let relax = relaxGridLevel { payload["relaxGridLevel"] = relax }
+        // Left out when nil so the engine decides from the molecule size: it
+        // turns density fitting on only once the molecule is large enough to
+        // pay for the auxiliary basis, and small molecules run faster without.
+        if let fit = densityFit { payload["densityFit"] = fit }
         return try await run {
             OptimisationResult(try call("optimise", payload))
         }
