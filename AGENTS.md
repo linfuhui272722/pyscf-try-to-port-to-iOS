@@ -497,6 +497,18 @@ The `diff` must be empty. Then create the release over the API -- POST to
 the release back afterwards and check both assets report `uploaded`; the upload
 endpoint returns before the asset is servable.
 
+Pushes go to `master`, from the working branch `ios-port`:
+
+```
+git push origin ios-port:master
+```
+
+A stored credential at `~/.git-credentials` (`credential.helper = store`) holds
+the push token, so no token goes into the command or the shell history. The
+token that ships in the environment as `GITHUB_TOKEN` is a GitHub App
+installation token with read-only contents; it answers the API but cannot push
+(`Resource not accessible by integration`). Do not spend time retrying it.
+
 A tag on its own publishes nothing. A release needs the tag, the IPA, and the
 sha256; a tag without a release leaves the version with no downloadable
 artifact.
