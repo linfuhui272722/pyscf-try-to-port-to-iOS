@@ -50,7 +50,8 @@ fails fast with a message naming the script to run when something is missing.
 ```bash
 python3 tests/run_tests.py          # Python engine + vendored-shim tests
 scripts/check-bridge-contract.sh    # Swift models decode real bridge JSON
-                                    #   (also runs ios/tests/LayoutTests)
+                                    #   (also runs ios/tests/LayoutTests and
+                                    #   ios/tests/HistoryTests)
 scripts/validate-ios-app.sh         # the built .app is a genuine iOS bundle
 ```
 
@@ -64,6 +65,10 @@ breakage:
 * `ios/tests/LayoutTests` — the 3D preview's sizing and framing rules. A wrong
   radius or camera distance still produces a valid scene, so it renders as an
   empty-looking molecule rather than an error.
+* `ios/tests/HistoryTests` — the saved-calculation store and its text export.
+  Both failures are silent on a device: a field dropped on the way to disk still
+  lists and still shows energies, and an export with an empty section still
+  produces a file. The checks drive real entries through a real directory.
 * `validate-ios-app.sh` — architecture, min-OS, dependency closure, and
   accidental host-path leakage in the shipped bundle.
 

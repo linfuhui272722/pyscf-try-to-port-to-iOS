@@ -502,7 +502,7 @@ if all(strings_tables.values()):
             with open(os.path.join(directory, name), encoding="utf-8") as handle:
                 source_keys |= set(_re.findall(r'\bL(?:F)?\("([a-zA-Z0-9._]+)"', handle.read()))
     source_keys |= {f"screen.{name}" for name in
-                    ("builder", "results", "orbitals", "density", "table", "diagnostics")}
+                    ("builder", "results", "history", "orbitals", "density", "table", "diagnostics")}
     undefined = sorted(source_keys - set(english))
     check(not undefined, "every string the UI asks for is defined",
           ", ".join(undefined[:5]))

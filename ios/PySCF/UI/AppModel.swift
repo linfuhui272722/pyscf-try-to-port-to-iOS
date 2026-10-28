@@ -130,6 +130,7 @@ enum DensityFitChoice: String, CaseIterable, Identifiable {
 enum Screen: String, CaseIterable, Identifiable {
     case builder = "Builder"
     case results = "Results"
+    case history = "History"
     case orbitals = "Orbitals"
     case density = "Density"
     case table = "Elements"
@@ -144,6 +145,7 @@ enum Screen: String, CaseIterable, Identifiable {
         switch self {
         case .builder: return "atom"
         case .results: return "chart.bar.doc.horizontal"
+        case .history: return "clock.arrow.circlepath"
         case .orbitals: return "waveform.path.ecg"
         case .density: return "square.grid.3x3"
         case .table: return "tablecells"
@@ -210,6 +212,97 @@ final class AppModel: ObservableObject {
     private let engine = PySCFEngine()
     private var didBootstrap = false
 
+    // MARK: - History
+
+    /// Saved calculations, newest first.
+    @Published var history: [HistoryEntry] = []
+
+    /// The store behind ``history``.
+    ///
+    /// Lazy so the Documents directory is only touched when history is first
+    /// read or written, and not during the interpreter's boot.
+    private lazy var historyStore = HistoryStore.applicationStore()
+
+    /// Reads the saved calculations from disk.
+    ///
+    /// Called once at bootstrap and after every mutation, rather than kept in
+    /// sync incrementally: the store is the source of truth, and a list that
+    /// drifts from it would show entries that are not there.
+    func refreshHistory() {
+        history = historyStore.load()
+    }
+
+    /// Deletes one saved calculation.
+    func deleteHistory(_ entry: HistoryEntry) {
+        historyStore.remove(entry.id)
+        history = historyStore.load()
+        log("deleted history entry \(entry.kind.rawValue)/\(entry.basis)")
+    }
+
+    /// Deletes every saved calculation.
+    func deleteAllHistory() {
+        historyStore.removeAll()
+        history = []
+        log("deleted all history")
+    }
+
+    /// The text export of one entry.
+    func historyText(for entry: HistoryEntry) -> String {
+        HistoryReport.text(for: entry)
+    }
+
+    /// The text export of the whole history, newest first.
+    func historyText() -> String {
+        HistoryReport.text(for: history)
+    }
+
+    /// Records the result of a completed run.
+    ///
+    /// Called from the run path after the result is published, so a run that
+    /// fails records nothing.
+    private func recordHistory(kind: HistoryKind,
+                               method: String,
+                               basis: String,
+                               functional: String?,
+                               atoms: String,
+                               charge: Int,
+                               spin: Int,
+                               energy: Double,
+                               converged: Bool,
+                               wallTimeMs: Double,
+                               summary: String,
+                               payload: JSONObject) {
+        let entry = HistoryEntry(
+            kind: kind,
+            method: method,
+            basis: basis,
+            functional: functional,
+            atoms: atoms,
+            charge: charge,
+            spin: spin,
+            energy: energy,
+            converged: converged,
+            wallTimeMs: wallTimeMs,
+            summary: summary,
+            payload: HistoryStore.stripped(payload))
+        history = historyStore.add(entry)
+    }
+
+    /// The history kind matching a picker selection.
+    ///
+    /// Separate from ``CalculationKind`` because the two serve different
+    /// lifetimes: this one also names scans, and an old entry must keep
+    /// decoding after a case is removed from the picker.
+    private func historyKind(for calculation: CalculationKind) -> HistoryKind {
+        switch calculation {
+        case .scf: return .scf
+        case .dft: return .dft
+        case .optimise: return .optimise
+        case .mp2: return .mp2
+        case .ccsd: return .ccsd
+        }
+    }
+
     // MARK: - Charge and spin
 
     /// Electrons the current molecule would have, or nil while the geometry has
@@ -259,6 +352,10 @@ final class AppModel: ObservableObject {
         didBootstrap = true
         DiagnosticsLog.shared.write("app launch, log destinations: "
             + "\(DiagnosticsLog.shared.writableDestinations())", tag: "app")
+        // Loaded before the engine, which can take seconds to boot: history is
+        // on disk and has no reason to wait for the interpreter.
+        refreshHistory()
+        log("history: \(history.count) saved calculation(s)")
         do {
             let caps = try await engine.capabilities()
             capabilities = caps
@@ -445,6 +542,20 @@ final class AppModel: ObservableObject {
             optimisation = nil
             logText = output.log
             screen = .results
+            recordHistory(kind: historyKind(for: calculation),
+                          method: output.method,
+                          basis: basis,
+                          functional: calculation.usesFunctional ? functional : nil,
+                          atoms: spec,
+                          charge: charge,
+                          spin: spin,
+                          energy: output.energy,
+                          converged: output.converged,
+                          wallTimeMs: output.wallTimeMs,
+                          summary: output.converged
+                              ? "converged in \(output.cycles) cycles"
+                              : "not converged",
+                          payload: output.json)
             log("\(output.method): E = \(String(format: "%.8f", output.energy)) Ha "
                 + "in \(Int(output.wallTimeMs)) ms")
             if output.converged == false {
@@ -469,6 +580,20 @@ final class AppModel: ObservableObject {
             scan = output
             optimisation = nil
             screen = .results
+            recordHistory(kind: .scan,
+                          method: output.label,
+                          basis: basis,
+                          functional: nil,
+                          atoms: atomSpec,
+                          charge: charge,
+                          spin: spin,
+                          energy: output.minimumEnergy ?? 0,
+                          converged: output.minimumEnergy != nil,
+                          wallTimeMs: 0,
+                          summary: output.minimumR.map {
+                              String(format: "minimum at %.3f Å", $0)
+                          } ?? "no minimum found",
+                          payload: output.json)
             if let r = output.minimumR, let e = output.minimumEnergy {
                 log("\(output.label) scan: minimum at \(String(format: "%.3f", r)) Å, "
                     + "\(String(format: "%.6f", e)) Ha")
@@ -498,6 +623,20 @@ final class AppModel: ObservableObject {
             scan = nil
             logText = output.log
             screen = .results
+            recordHistory(kind: .optimise,
+                          method: output.method,
+                          basis: basis,
+                          functional: output.functional ?? functional,
+                          atoms: atomSpec,
+                          charge: charge,
+                          spin: spin,
+                          energy: output.energy,
+                          converged: output.converged,
+                          wallTimeMs: output.wallTimeMs,
+                          summary: output.converged
+                              ? "relaxed in \(output.steps) steps"
+                              : "not converged",
+                          payload: output.json)
             log("\(output.method): optimised in \(output.steps) steps, "
                 + "E = \(String(format: "%.8f", output.energy)) Ha, "
                 + "max|grad| = \(String(format: "%.2e", output.maxGradient))")

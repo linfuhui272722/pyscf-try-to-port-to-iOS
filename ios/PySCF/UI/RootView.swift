@@ -44,6 +44,7 @@ struct RootView: View {
             switch model.screen {
             case .builder: BuilderView()
             case .results: ResultsView()
+            case .history: HistoryView()
             case .orbitals: OrbitalsScreen()
             case .density: DensityScreen()
             case .table: ElementsView()

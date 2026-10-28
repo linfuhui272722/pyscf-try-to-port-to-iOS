@@ -137,7 +137,27 @@ LD_LIBRARY_PATH="$SWIFTLIBS:${LD_LIBRARY_PATH:-}" \
   "$SWIFT" -o "$OUT/layout" \
   "$ROOT/ios/tests/LayoutTests/main.swift" \
   "$ROOT/ios/PySCF/Models/PySCFModels.swift" \
+  "$ROOT/ios/PySCF/Models/Formatting.swift" \
   "$ROOT/ios/PySCF/Views/MoleculeLayout.swift"
 
 echo ">> running the preview layout checks"
 FIXTURES="$OUT/fixtures.json" "$OUT/layout"
+
+# The history store and its text export are Foundation only, so the same host
+# toolchain checks them. Their failures are silent on a device -- a dropped
+# field still lists, an empty section still exports -- which is why they are
+# driven through a real directory and read back rather than unit-tested in
+# isolation.
+echo ">> compiling the history checks"
+LD_LIBRARY_PATH="$SWIFTLIBS:${LD_LIBRARY_PATH:-}" \
+  "$SWIFT" -o "$OUT/history" \
+  "$ROOT/ios/tests/HistoryTests/main.swift" \
+  "$ROOT/ios/PySCF/Models/PySCFModels.swift" \
+  "$ROOT/ios/PySCF/Models/Formatting.swift" \
+  "$ROOT/ios/PySCF/Models/AtomSpec.swift" \
+  "$ROOT/ios/PySCF/Models/HistoryEntry.swift" \
+  "$ROOT/ios/PySCF/Models/HistoryStore.swift" \
+  "$ROOT/ios/PySCF/Models/HistoryReport.swift"
+
+echo ">> running the history checks"
+FIXTURES="$OUT/fixtures.json" "$OUT/history"

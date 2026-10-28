@@ -1,7 +1,9 @@
 // Theme.swift
 //
 // Small presentation helpers shared by the views: hex colour parsing for the
-// engine's CPK palette and number formatting for physical quantities.
+// engine's CPK palette, and the card/metric components the panels are built
+// from.  Number formatting lives in Models/Formatting.swift, which does not
+// import SwiftUI so the host tests can use it.
 
 import SwiftUI
 
@@ -30,28 +32,6 @@ extension Color {
 
 extension Element {
     var color: Color { Color(hex: colorHex) }
-}
-
-/// Formats a Hartree energy with enough precision to see correlation effects.
-func formatHartree(_ value: Double) -> String {
-    String(format: "%.8f Ha", value)
-}
-
-/// Formats an energy difference in both Hartree and electron-volts.
-func formatEnergyDelta(_ value: Double) -> String {
-    String(format: "%.6f Ha  (%.4f eV)", value, value * 27.211386245988)
-}
-
-/// Formats a length in ångström.
-func formatLength(_ value: Double) -> String {
-    String(format: "%.3f Å", value)
-}
-
-/// Formats a duration in milliseconds.
-func formatDuration(_ milliseconds: Double) -> String {
-    milliseconds >= 1000
-        ? String(format: "%.2f s", milliseconds / 1000)
-        : String(format: "%.0f ms", milliseconds)
 }
 
 /// A labelled value row used across the result panels.

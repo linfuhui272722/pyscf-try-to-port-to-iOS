@@ -600,7 +600,15 @@ struct ScfResult {
     var grid: DensityGrid?
     var moCoefficients: [[Double]]?
 
+    /// The engine's response, verbatim.
+    ///
+    /// Kept so a finished run can be written to history without re-encoding the
+    /// typed fields, which would silently drop any field the model does not
+    /// name -- including ones added to the engine after this file was written.
+    var json: JSONObject
+
     init(_ json: JSONObject) {
+        self.json = json
         method = json.value("method") as String? ?? ""
         energy = json.number("energy") ?? 0
         converged = json.value("converged") as Bool? ?? false
@@ -650,7 +658,11 @@ struct BondScanResult {
     var minimumR: Double?
     var minimumEnergy: Double?
 
+    /// The engine's response, verbatim. See ``ScfResult/json``.
+    var json: JSONObject
+
     init(_ json: JSONObject) {
+        self.json = json
         i = json.integer("i") ?? 0
         j = json.integer("j") ?? 0
         label = json.value("label") as String? ?? ""
@@ -704,11 +716,15 @@ struct OptimisationResult {
     var trajectory: [OptimisationStep]
     var log: String
 
+    /// The engine's response, verbatim. See ``ScfResult/json``.
+    var json: JSONObject
+
     /// The optimised structure in the form the builder's atom field expects,
     /// so the user can copy it straight back into the editor.
     var coordinates: String { optimisedAtoms }
 
     init(_ json: JSONObject) {
+        self.json = json
         method = json.value("method") as String? ?? ""
         functional = json.value("functional") as String?
         converged = json.value("converged") as Bool? ?? false
