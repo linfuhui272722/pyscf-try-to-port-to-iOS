@@ -184,6 +184,11 @@ final class AppModel: ObservableObject {
     @Published var showsOrbital: Bool = true
     /// Set while the orbital isosurface is being computed.
     @Published var isLoadingOrbital: Bool = false
+    /// Identifies the newest orbital request, so a slow earlier one cannot
+    /// overwrite the answer the user is waiting for.
+    private var orbitalRequestToken = 0
+    /// Identifies the newest pending isovalue redraw, so a drag issues one.
+    private var orbitalRedrawToken = 0
     @Published var scanI: Int = 0
     @Published var scanJ: Int = 1
     @Published var maxOptimisationSteps: Int = 40
@@ -603,8 +608,16 @@ final class AppModel: ObservableObject {
         // be present even if the builder never refreshed it.
         if geometry == nil { await refreshGeometry() }
         let chosen = source ?? orbitalSource
+
+        // Each request is a mean-field solve, and the requests do not finish in
+        // the order they were made: a fast one started later can overtake a slow
+        // one started earlier, which would leave the viewer showing an orbital
+        // the user has already moved past.  Tag every request and keep only the
+        // newest answer.
+        orbitalRequestToken += 1
+        let token = orbitalRequestToken
         isLoadingOrbital = true
-        defer { isLoadingOrbital = false }
+        defer { if token == orbitalRequestToken { isLoadingOrbital = false } }
         do {
             let surface = try await engine.orbitalSurface(
                 atoms: atomSpec,
@@ -617,6 +630,7 @@ final class AppModel: ObservableObject {
                 charge: charge,
                 spin: spin,
                 isovalue: isovalueFraction)
+            guard token == orbitalRequestToken else { return }
             orbitalSource = chosen
             viewedOrbital = index
             orbitalSurface = surface
@@ -624,6 +638,7 @@ final class AppModel: ObservableObject {
                 log("\(surface.label): no envelope at this isovalue; raise it to shrink the surface")
             }
         } catch {
+            guard token == orbitalRequestToken else { return }
             report(error)
         }
     }
@@ -632,6 +647,23 @@ final class AppModel: ObservableObject {
     func redrawOrbital() async {
         guard let index = viewedOrbital else { return }
         await loadOrbital(index, source: orbitalSource)
+    }
+
+    /// Redraws the current orbital once the isovalue has settled.
+    ///
+    /// The slider fires on every step of a drag, and each step would otherwise
+    /// start its own solve and queue behind the ones before it.  Only the value
+    /// the user stops on is wanted, so the request is deferred until the changes
+    /// pause and dropped if another arrives first.
+    func scheduleOrbitalRedraw() {
+        guard viewedOrbital != nil else { return }
+        orbitalRedrawToken += 1
+        let token = orbitalRedrawToken
+        Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard token == orbitalRedrawToken else { return }
+            await redrawOrbital()
+        }
     }
 
     /// Scans the potential-energy surface along the selected bond.

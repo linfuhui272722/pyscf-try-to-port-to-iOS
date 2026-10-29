@@ -440,7 +440,7 @@ struct OrbitalsScreen: View {
                     Text(L("orbitals.viewer.isovalue"))
                 }
                 .onChange(of: model.isovalueFraction) { _ in
-                    Task { await model.redrawOrbital() }
+                    model.scheduleOrbitalRedraw()
                 }
 
                 Toggle(L("orbitals.viewer.show"), isOn: $model.showsOrbital)
