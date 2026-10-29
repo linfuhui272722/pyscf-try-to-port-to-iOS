@@ -22,7 +22,7 @@ import time
 import traceback
 from typing import Any, Iterable
 
-from . import geometry, nbo
+from . import geometry, localized_orbitals, natural_orbitals
 from .diaglog import crash_probe, get_logger
 
 # --------------------------------------------------------------------------
@@ -680,7 +680,15 @@ def _electronic_structure(mf, atoms, include) -> dict:
         result["dipole"] = _dipole(mf)
         result["mulliken"] = _mulliken(mf, atoms)
         result["mayer"] = _mayer_bond_orders(mf, atoms)
-        result["npa"] = nbo.natural_population_analysis(mf, atoms)
+        # NPA, the natural orbitals and the Wiberg bond orders all come out of
+        # one NAO transformation.
+        result.update(natural_orbitals.analyze(mf, atoms))
+        # The localised orbitals reuse that same NAO basis, so they are cheap
+        # next to it. CLPO is the default: it is the one that reads as a Lewis
+        # structure, which is what a panel of bonds and lone pairs is for.
+        result["localizedOrbitals"] = localized_orbitals.localized_orbitals(
+            mf, atoms, kind="clpo"
+        )
     if "mo" in include:
         result["moCoefficients"] = np.asarray(mf.mo_coeff, dtype=float).tolist()
     if "overlap" in include:
@@ -1047,25 +1055,69 @@ def analyse_geometry(params: dict) -> dict:
 
 
 def run_natural_population(params: dict) -> dict:
-    """Natural population analysis for an existing wavefunction.
+    """Natural orbital analysis for an existing wavefunction.
 
     Standalone so the analysis can be asked for directly, without re-running
-    the mean field that produced the density.  ``include`` accepts the same
-    ``_skip_population`` switch as the SCF entry points, since callers that only
-    want the charges should not pay for the rest of the payload.
+    the mean field that produced the density.  Returns the NAO/NPA charges, the
+    per-orbital detail and the Wiberg bond orders, all from one NAO
+    transformation.  ``include`` accepts the same ``_skip_population`` switch as
+    the SCF entry points.
     """
     start = time.perf_counter()
     mf, atoms, basis, method, _log = _run_mean_field(params)
     wall_ms = (time.perf_counter() - start) * 1000.0
-    analysis = nbo.natural_population_analysis(mf, atoms)
-    if analysis is None:
-        raise ValueError("natural population analysis is unavailable for this wavefunction")
+    analysis = natural_orbitals.analyze(mf, atoms)
+    if analysis["npa"] is None:
+        raise ValueError("natural orbital analysis is unavailable for this wavefunction")
     return {
         "ok": True,
         "method": f"{method}/{basis}",
         "energy": round(float(mf.e_tot), 10),
         "wallTimeMs": round(wall_ms, 3),
         **analysis,
+    }
+
+
+def run_wiberg(params: dict) -> dict:
+    """Wiberg-Mayer bond orders in the NAO basis for an existing wavefunction."""
+    start = time.perf_counter()
+    mf, atoms, basis, method, _log = _run_mean_field(params)
+    wall_ms = (time.perf_counter() - start) * 1000.0
+    bonds = natural_orbitals.wiberg_bond_orders(mf, atoms)
+    if bonds is None:
+        raise ValueError("Wiberg bond orders are unavailable for this wavefunction")
+    return {
+        "ok": True,
+        "method": f"{method}/{basis}",
+        "energy": round(float(mf.e_tot), 10),
+        "wallTimeMs": round(wall_ms, 3),
+        **bonds,
+    }
+
+
+def run_localized_orbitals(params: dict) -> dict:
+    """Localised property-optimised orbitals for an existing wavefunction.
+
+    ``kind`` selects JANPA's two variants: ``"clpo"`` for the chemist's orbitals
+    that keep lone pairs on their own atom, ``"lpo"`` for the plain
+    property-optimised ones.  Defaults to CLPO, the one that reads as a Lewis
+    structure.
+    """
+    start = time.perf_counter()
+    mf, atoms, basis, method, _log = _run_mean_field(params)
+    wall_ms = (time.perf_counter() - start) * 1000.0
+    kind = str(params.get("kind", "clpo")).lower()
+    if kind not in ("clpo", "lpo"):
+        raise ValueError(f"kind must be 'clpo' or 'lpo', not {kind!r}")
+    result = localized_orbitals.localized_orbitals(mf, atoms, kind=kind)
+    if result is None:
+        raise ValueError("localised orbital analysis is unavailable for this wavefunction")
+    return {
+        "ok": True,
+        "method": f"{method}/{basis}",
+        "energy": round(float(mf.e_tot), 10),
+        "wallTimeMs": round(wall_ms, 3),
+        **result,
     }
 
 
@@ -1104,6 +1156,11 @@ def dispatch(method: str, params: dict) -> dict:
         "bond_scan": run_bond_scan,
         "geometry": analyse_geometry,
         "nbo": run_natural_population,
+        "wiberg": run_wiberg,
+        # The method name is the default variant, so "lpo" does not need an
+        # explicit kind while "clpo" can still be asked for anything.
+        "lpo": lambda params: run_localized_orbitals({**params, "kind": params.get("kind", "lpo")}),
+        "clpo": lambda params: run_localized_orbitals({**params, "kind": params.get("kind", "clpo")}),
         "optimise": run_geometry_optimisation,
     }
     if method not in handlers:

@@ -120,7 +120,7 @@ do {
     // drop the panel rather than fail; assert the numbers instead.
     if let npa = scf.npa {
         expect(npa.perAtom.count == 3, "three natural charges")
-        expect(npa.analysisMethod == "NAO/NPA", "analysis names the method (\(npa.analysisMethod))")
+        expect(npa.analysisMethod == "NAO/NPA (JANPA 2.02 port)", "analysis names the method (\(npa.analysisMethod))")
         expect(npa.sumRuleOk, "occupancies sum to the electron count")
         expect(abs(npa.totalPopulation - Double(npa.nElectrons)) < 1e-6, "occupancy total matches N")
         // The fixture is sto-3g, a minimal basis, so the natural charge is much
@@ -130,9 +130,28 @@ do {
         expect(npa.perAtom[0].charge < npa.perAtom[1].charge, "oxygen is more negative than hydrogen")
         expect(npa.perAtom[0].configuration["1s"] != nil, "oxygen has a 1s shell")
         expect(npa.perAtom[0].configurationText.contains("2s"), "configuration prints shell labels (\(npa.perAtom[0].configurationText))")
-        expect(npa.perAtom[0].orbitals.count == 5, "oxygen has five NAOs (\(npa.perAtom[0].orbitals.count))")
+        // The orbitals live on the fuller payload, not on the charge summary;
+        // assert the count there so a rename of either key is caught.
+        if let orbitals = scf.naturalOrbitals {
+            expect(orbitals.orbitals(ofAtom: 0).count == 5, "oxygen has five NAOs (\(orbitals.orbitals(ofAtom: 0).count))")
+        } else {
+            expect(false, "natural orbital detail missing from the SCF payload")
+        }
     } else {
         expect(false, "natural population analysis missing from the SCF payload")
+    }
+    // The localised orbitals are the chemistry-facing view: bonds and lone
+    // pairs. The field is optional on the Swift side, so a rename would drop
+    // the panel silently; assert the shape and the Lewis structure instead.
+    if let localized = scf.localizedOrbitals {
+        expect(localized.kind == "CLPO", "SCF defaults to CLPO (\(localized.kind))")
+        expect(localized.analysisMethod == "LPO/CLPO (JANPA 2.02 port)", "localised analysis names the method (\(localized.analysisMethod))")
+        expect(localized.bonds.count == 2, "water has two bonds (\(localized.bonds.count))")
+        expect(localized.lonePairs.count == 3, "oxygen keeps three lone pairs (\(localized.lonePairs.count))")
+        expect(localized.valences == [2, 1, 1], "valence is O=2, H=1 (\(localized.valences))")
+        expect(localized.bonds.allSatisfy { abs($0.occupancy - 2.0) < 0.05 }, "each bond holds two electrons")
+    } else {
+        expect(false, "localised orbitals missing from the SCF payload")
     }
     expect(scf.dipole.vector.count == 3, "dipole vector is 3D")
     expect(scf.dipole.magnitude > 0.5, "water has a dipole (\(scf.dipole.magnitude) D)")

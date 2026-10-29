@@ -21,6 +21,7 @@ struct ScfResultPanels: View {
             orbitalPanel
             chargesPanel
             naturalPanel
+            localizedOrbitalsPanel
             mayerPanel
             dipolePanel
         }
@@ -134,6 +135,67 @@ struct ScfResultPanels: View {
                 Text(L("results.notAvailable")).font(.callout).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Localised property-optimised orbitals: the bonds and lone pairs.
+    ///
+    /// This is the panel that answers "what does this molecule look like". The
+    /// natural orbitals above delocalise the density across the whole molecule,
+    /// which is what makes them basis-stable but unreadable as chemistry; these
+    /// orbitals rotate that same density back onto individual bonds and lone
+    /// pairs. The valence per atom is the count of two-centre bonds, which is
+    /// the Lewis picture made numerical.
+    @ViewBuilder
+    private var localizedOrbitalsPanel: some View {
+        Panel(title: L("results.localized"), systemImage: "circle.hexagongrid") {
+            if let localized = result.localizedOrbitals, !localized.orbitals.isEmpty {
+                Text(localized.isCLPO ? L("results.localized.clpo") : L("results.localized.lpo"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(localized.bonds) { orbital in
+                    MetricRow(
+                        label: orbital.label,
+                        value: String(format: "%.4f", orbital.occupancy),
+                        emphasised: orbital.occupancy >= 1.5
+                    )
+                }
+
+                let lonePairs = localized.lonePairs
+                if !lonePairs.isEmpty {
+                    Divider()
+                    Text(L("results.localized.lonePairs")).font(.caption).foregroundStyle(.secondary)
+                    ForEach(lonePairs) { orbital in
+                        MetricRow(
+                            label: "\(orbital.elements.first ?? "?")\(orbital.centres.first.map { $0 + 1 } ?? 1)",
+                            value: String(format: "%.4f", orbital.occupancy),
+                            emphasised: orbital.occupancy >= 1.5
+                        )
+                    }
+                }
+
+                if !localized.valences.isEmpty {
+                    Divider()
+                    Text(L("results.localized.valence")).font(.caption).foregroundStyle(.secondary)
+                    ForEach(Array(localized.valences.enumerated()), id: \.offset) { index, valence in
+                        MetricRow(label: "\(elementLabel(index))", value: "\(valence)")
+                    }
+                }
+
+                Text(L("results.localized.note"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(L("results.notAvailable")).font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The element symbol for an atom index, from the molecule as entered.
+    private func elementLabel(_ index: Int) -> String {
+        let elements = result.mulliken.perAtom.map(\.element)
+        guard index < elements.count else { return "#\(index + 1)" }
+        return "\(elements[index])\(index + 1)"
     }
 
     /// Mayer bond orders. Sorted strongest first, because a bond order is read

@@ -154,6 +154,22 @@ enum HistoryReport {
             lines.append("")
         }
 
+        if let localized = result.localizedOrbitals, !localized.orbitals.isEmpty {
+            lines.append(section("Localized orbitals (\(localized.kind), e)"))
+            for orbital in localized.bonds {
+                lines.append(row(orbital.label, String(format: "%.4f", orbital.occupancy)))
+            }
+            for orbital in localized.lonePairs {
+                let name = "\(orbital.elements.first ?? "?")"
+                    + "\(orbital.centres.first.map { $0 + 1 } ?? 1)"
+                lines.append(row("LP \(name)", String(format: "%.4f", orbital.occupancy)))
+            }
+            if !localized.valences.isEmpty {
+                lines.append(row("Valence", localized.valences.map(String.init).joined(separator: ", ")))
+            }
+            lines.append("")
+        }
+
         if let mayer = result.mayer, !mayer.bonds.isEmpty {
             lines.append(section("Mayer bond orders"))
             for bond in mayer.bonds.sorted(by: { $0.order > $1.order }) {

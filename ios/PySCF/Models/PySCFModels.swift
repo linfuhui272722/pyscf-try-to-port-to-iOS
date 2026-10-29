@@ -68,6 +68,11 @@ struct JSONObject {
         return dict.compactMapValues { ($0 as? NSNumber)?.doubleValue }
     }
 
+    func intMap(_ key: String) -> [String: Int] {
+        guard let dict = raw[key] as? [String: Any] else { return [:] }
+        return dict.compactMapValues { ($0 as? NSNumber)?.intValue }
+    }
+
     func boolMap(_ key: String) -> [String: Bool] {
         guard let dict = raw[key] as? [String: Any] else { return [:] }
         return dict.compactMapValues { $0 as? Bool }
@@ -417,10 +422,12 @@ struct MullikenAnalysis {
 /// Mulliken moves by more than half an electron over the same three bases. Both
 /// are shown for that reason.
 ///
-/// The engine reports NPA only. It does not report NBO orbitals or the
-/// second-order perturbation energies E(2) that the NBO program produces,
-/// because those require the iterative NBO transformation whose reference
-/// implementation is licensed software; see `src/pyscf_mobile/nbo.py`.
+/// The numbers come from a port of JANPA 2.02 (see
+/// `src/pyscf_mobile/natural_orbitals.py`), which reproduces the reference
+/// program's charges and bond orders to the last digit. The second-order
+/// perturbation energies E(2) that the NBO program also produces are not
+/// reported: they need the iterative NBO transformation, which JANPA does not
+/// implement.
 struct NaturalPopulationAnalysis {
     var perAtom: [NaturalAtom]
     var perElement: [String: Double]
@@ -439,15 +446,15 @@ struct NaturalPopulationAnalysis {
     }
 }
 
-/// One atom's natural charge, occupancy and natural electron configuration.
+/// One atom's natural charge and population, with its natural electron
+/// configuration.
 struct NaturalAtom: Identifiable, Hashable {
     var index: Int
     var element: String
     var population: Double
     var charge: Double
-    /// Shell populations such as `["1s": 2.0, "2s": 1.77, "2p": 5.18]`.
+    /// Shell label to occupancy, e.g. `["1s": 2.0, "2s": 1.76, "2p": 5.18]`.
     var configuration: [String: Double]
-    var orbitals: [NaturalOrbital]
 
     var id: Int { index }
 
@@ -457,48 +464,133 @@ struct NaturalAtom: Identifiable, Hashable {
         population = json.number("population") ?? 0
         charge = json.number("charge") ?? 0
         configuration = json.doubleMap("configuration")
-        orbitals = json.objects("orbitals").map(NaturalOrbital.init)
     }
 
-    /// The configuration as a single line, in shell order.
+    /// The configuration as JANPA prints it, core shells first: `1s(2) 2s(1.76)`.
+    ///
+    /// The shell labels sort by principal quantum number then by angular
+    /// momentum, which the numeric prefix and the letter give in that order.
     var configurationText: String {
-        configuration
-            .sorted { lhs, rhs in
-                let left = Self.shellOrder(lhs.key)
-                let right = Self.shellOrder(rhs.key)
-                return left == right ? lhs.key < rhs.key : left < right
-            }
-            .map { String(format: "%@ %.2f", $0.key, $0.value) }
-            .joined(separator: "  ")
+        let ordered = configuration.keys.sorted { left, right in
+            let (ln, ll) = NaturalAtom.split(left)
+            let (rn, rl) = NaturalAtom.split(right)
+            return ln == rn ? ll < rl : ln < rn
+        }
+        let parts = ordered.map { shell -> String in
+            String(format: "%@(%.2f)", shell, configuration[shell] ?? 0)
+        }
+        return parts.joined(separator: " ")
     }
 
-    /// Sorts `2p` before `2s` before `3s`, by principal number then angular
-    /// momentum, so the printed configuration reads the way it is written by
-    /// hand rather than alphabetically.
-    private static func shellOrder(_ shell: String) -> (Int, Int) {
+    private static func split(_ shell: String) -> (Int, String) {
         let digits = shell.prefix { $0.isNumber }
-        let principal = Int(digits) ?? 99
-        let letters = "spdfgh"
-        let letter = shell.first { $0.isLetter }.map { $0.lowercased() } ?? "s"
-        let angular = letters.firstIndex(of: Character(letter)).map { letters.distance(from: letters.startIndex, to: $0) } ?? 0
-        return (principal, angular)
+        return (Int(digits) ?? 0, String(shell.dropFirst(digits.count)))
+    }
+}
+
+/// The natural atomic orbitals themselves, with their occupancies.
+///
+/// The minimal-basis (NMB) and Rydberg (NRB) counts are the split JANPA makes
+/// by comparing each orbital's rank within its centre and angular momentum
+/// against the ground-state configuration table. The orthogonality error is the
+/// self-check: the NAO overlap must be the unit matrix, so anything above
+/// machine precision means a step of the transformation is wrong.
+struct NaturalOrbitals {
+    var orbitals: [NaturalOrbital]
+    var angularPopulations: [[String: Double]]
+    var nmbFunctions: Int
+    var nrbFunctions: Int
+    var orthogonalityError: Double
+    var analysisMethod: String
+
+    init(_ json: JSONObject) {
+        orbitals = json.objects("orbitals").map(NaturalOrbital.init)
+        angularPopulations = json.objects("angularPopulations").map { $0.doubleMap("") }
+        nmbFunctions = json.integer("nmbFunctions") ?? 0
+        nrbFunctions = json.integer("nrbFunctions") ?? 0
+        orthogonalityError = json.number("orthogonalityError") ?? 0
+        analysisMethod = json.value("analysisMethod") as String? ?? ""
+    }
+
+    /// The orbitals of one atom, most occupied first.
+    func orbitals(ofAtom atom: Int) -> [NaturalOrbital] {
+        orbitals
+            .filter { $0.atom == atom }
+            .sorted { $0.occupation > $1.occupation }
     }
 }
 
 /// One natural atomic orbital.
 struct NaturalOrbital: Identifiable, Hashable {
-    var label: String
-    var shell: String
+    var index: Int
+    var atom: Int
+    var element: String
+    var angular: String
     var occupation: Double
-    var character: String
+    var rydberg: Bool
+    var leadingAo: Int
+    var leadingCoefficient: Double
 
-    var id: String { label }
+    var id: Int { index }
+
+    /// A human-readable name, in the style JANPA prints: `A1: R3*s(0)`.
+    var label: String { "\(element)\(atom + 1) \(angular)" }
 
     init(_ json: JSONObject) {
-        label = json.value("label") as String? ?? ""
-        shell = json.value("shell") as String? ?? ""
-        occupation = json.number("occupation") ?? 0
-        character = json.value("character") as String? ?? ""
+        index = json.integer("index") ?? 0
+        atom = json.integer("atom") ?? 0
+        element = json.value("element") as String? ?? "?"
+        angular = json.value("angular") as String? ?? "s"
+        occupation = json.number("occupancy") ?? 0
+        rydberg = json.value("rydberg") as Bool? ?? false
+        leadingAo = json.integer("leadingAo") ?? 0
+        leadingCoefficient = json.number("leadingCoefficient") ?? 0
+    }
+}
+
+/// Wiberg-Mayer bond orders computed in the natural atomic orbital basis.
+///
+/// ``matrix`` holds bond orders off the diagonal and each atom's valence on it.
+/// ``valences`` repeats the diagonal as a flat list, which is what a summary
+/// line wants.
+struct WibergAnalysis {
+    var matrix: [[Double]]
+    var atoms: [String]
+    var valences: [Double]
+    var bonds: [WibergBond]
+    var analysisMethod: String
+
+    init(_ json: JSONObject) {
+        matrix = (json.raw["matrix"] as? [[Any]])?
+            .map { $0.compactMap { ($0 as? NSNumber)?.doubleValue } } ?? []
+        atoms = json.strings("atoms")
+        valences = json.doubles("valences")
+        bonds = json.objects("bonds").map(WibergBond.init)
+        analysisMethod = json.value("analysisMethod") as String? ?? ""
+    }
+}
+
+/// One Wiberg bond order between two atoms.
+struct WibergBond: Identifiable, Hashable {
+    var i: Int
+    var j: Int
+    var elements: [String]
+    var order: Double
+    var distance: Double
+
+    var id: String { "\(i)-\(j)" }
+    var label: String {
+        let a = elements.first ?? "?"
+        let b = elements.count > 1 ? elements[1] : "?"
+        return "\(a)\(i + 1)-\(b)\(j + 1)"
+    }
+
+    init(_ json: JSONObject) {
+        i = json.integer("i") ?? 0
+        j = json.integer("j") ?? 0
+        elements = json.strings("elements")
+        order = json.number("order") ?? 0
+        distance = json.number("distance") ?? 0
     }
 }
 
@@ -519,6 +611,93 @@ struct MayerBond: Identifiable, Hashable {
         a = json.value("a") as String? ?? "?"
         b = json.value("b") as String? ?? "?"
         order = json.number("order") ?? 0
+    }
+}
+
+/// Localised property-optimised orbitals: JANPA's LPO and CLPO.
+///
+/// The natural atomic orbitals delocalise the density; these orbitals undo
+/// that, rotating each atom's NAOs into hybrids and pairing the hybrids of
+/// neighbouring atoms into bonds. LPO maximises the sum of squared occupations
+/// and so splits lone pairs into bent bonds; CLPO maximises only the bonding
+/// and lone-pair occupations, which keeps each lone pair on the atom that owns
+/// it and so reads as a Lewis structure. Water is the clearest case: LPO finds
+/// three bonding orbitals and two lone pairs, CLPO finds two and three.
+///
+/// The numbers come from a port of JANPA 2.02 (see
+/// `src/pyscf_mobile/localized_orbitals.py`), which reproduces the reference
+/// program's orbital occupancies and counts to its printed precision.
+struct LocalizedOrbitals {
+    var kind: String
+    var orbitals: [LocalizedOrbital]
+    /// Two-centre bonding orbitals per atom: the chemical valence.
+    var valences: [Int]
+    var occupancySummary: [String: Double]
+    var counts: [String: Int]
+    var analysisMethod: String
+
+    init(_ json: JSONObject) {
+        kind = json.value("kind") as String? ?? ""
+        orbitals = json.objects("orbitals").map(LocalizedOrbital.init)
+        valences = json.integers("valences")
+        occupancySummary = json.doubleMap("occupancySummary")
+        counts = json.intMap("counts")
+        analysisMethod = json.value("analysisMethod") as String? ?? ""
+    }
+
+    var isCLPO: Bool { kind == "CLPO" }
+
+    /// The two-centre bonds, strongest first.
+    var bonds: [LocalizedOrbital] {
+        orbitals.filter { $0.type == "bonding" }.sorted { $0.occupancy > $1.occupancy }
+    }
+
+    /// The one-centre lone pairs, strongest first.
+    var lonePairs: [LocalizedOrbital] {
+        orbitals.filter { $0.type == "lonePairs" }.sorted { $0.occupancy > $1.occupancy }
+    }
+}
+
+/// One localised orbital: a two-centre bond, a lone pair or an empty orbital.
+struct LocalizedOrbital: Identifiable, Hashable {
+    var type: String
+    var occupancy: Double
+    var centres: [Int]
+    var elements: [String]
+    var label: String
+    var ionicCharacter: Double?
+    var composition: [LocalizedOrbitalComponent]
+
+    var id: String { "\(label)-\(centres.map(String.init).joined(separator: "-"))-\(type)" }
+
+    var isBond: Bool { type == "bonding" }
+    var isLonePair: Bool { type == "lonePairs" }
+
+    init(_ json: JSONObject) {
+        type = json.value("type") as String? ?? ""
+        occupancy = json.number("occupancy") ?? 0
+        centres = json.integers("centres")
+        elements = json.strings("elements")
+        label = json.value("label") as String? ?? ""
+        ionicCharacter = json.number("ionicCharacter")
+        composition = json.objects("composition").map(LocalizedOrbitalComponent.init)
+    }
+}
+
+/// One hybrid's share of a localised orbital.
+struct LocalizedOrbitalComponent: Identifiable, Hashable {
+    var centre: Int
+    var element: String
+    var hybrid: Int
+    var coefficient: Double
+
+    var id: Int { centre }
+
+    init(_ json: JSONObject) {
+        centre = json.integer("centre") ?? 0
+        element = json.value("element") as String? ?? "?"
+        hybrid = json.integer("hybrid") ?? 0
+        coefficient = json.number("coefficient") ?? 0
     }
 }
 
@@ -592,6 +771,8 @@ struct ScfResult {
     var dipole: Dipole
     var mulliken: MullikenAnalysis
     var npa: NaturalPopulationAnalysis?
+    var naturalOrbitals: NaturalOrbitals?
+    var localizedOrbitals: LocalizedOrbitals?
     var mayer: MayerAnalysis?
     var wallTimeMs: Double
     var log: String
@@ -625,6 +806,8 @@ struct ScfResult {
         dipole = Dipole(json.object("dipole") ?? JSONObject([:]))
         mulliken = MullikenAnalysis(json.object("mulliken") ?? JSONObject([:]))
         npa = json.object("npa").map(NaturalPopulationAnalysis.init)
+        naturalOrbitals = json.object("naturalOrbitals").map(NaturalOrbitals.init)
+        localizedOrbitals = json.object("localizedOrbitals").map(LocalizedOrbitals.init)
         mayer = json.object("mayer").map(MayerAnalysis.init)
         wallTimeMs = json.number("wallTimeMs") ?? 0
         log = json.value("log") as String? ?? ""

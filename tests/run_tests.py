@@ -27,6 +27,7 @@ MODULES = [
     "test_mayer.py",
     "test_charge_spin.py",
     "test_nbo.py",
+    "test_localized_orbitals.py",
 ]
 
 # Imports the module and calls every top-level test_* function, in one process.
