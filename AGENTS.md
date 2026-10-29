@@ -537,6 +537,14 @@ token that ships in the environment as `GITHUB_TOKEN` is a GitHub App
 installation token with read-only contents; it answers the API but cannot push
 (`Resource not accessible by integration`). Do not spend time retrying it.
 
+In a fresh sandbox the store may be absent -- `git config --get
+credential.helper` returns nothing and `~/.git-credentials` does not exist. Then
+there is no push path at all: `GITHUB_TOKEN` is refused with a 403 that reads
+`Permission to <owner>/<repo>.git denied`, even though the API reports
+`permissions: push: true` for the same token. That is the read-only contents
+permission, not a scope the push can be retried into, so commit locally and ask
+for the credential to be provisioned rather than retrying.
+
 A tag on its own publishes nothing. A release needs the tag, the IPA, and the
 sha256; a tag without a release leaves the version with no downloadable
 artifact.
