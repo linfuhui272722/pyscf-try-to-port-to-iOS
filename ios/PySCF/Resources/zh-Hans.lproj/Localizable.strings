@@ -16,6 +16,7 @@
 "builder.charge" = "电荷：%d";
 "builder.compute" = "计算 %@";
 "builder.densityCube" = "密度立方体（供“密度”页使用）";
+"builder.localization" = "定域化轨道（Pipek-Mezey、Foster-Boys 或 ER）";
 "builder.formula" = "化学式";
 "builder.functional" = "泛函";
 "builder.geometry" = "几何结构";
@@ -100,6 +101,16 @@
 "orbitals.empty.title" = "暂无轨道数据";
 "orbitals.ladder" = "轨道能级 — %@";
 "orbitals.occupations" = "占据数";
+"orbitals.viewer" = "轨道形状";
+"orbitals.viewer.hint" = "选择一条轨道，绘制其经过分子中心的振幅切片。圆点标记占据轨道。";
+"orbitals.viewer.loading" = "正在计算轨道……";
+"orbitals.viewer.orbital" = "轨道";
+"orbitals.viewer.selection" = "MO %d   %@ Ha   占据 %@";
+"orbitals.viewer.phase" = "相位";
+"orbitals.viewer.phase.legend" = "红色 +，蓝色 \u2212";
+"orbitals.viewer.note" = "轨道中心处的切片。两种颜色代表两个相位；透明带是节面，即振幅变号之处。此处只画一个截面，因此位于切平面前方或后方的叶瓣只显示其截面。";
+"orbitals.viewer.unavailable" = "没有可绘制的轨道能量，请先运行一次计算。";
+"orbitals.noCube" = "未选择轨道";
 "plot.gap" = "HOMO–LUMO 能隙";
 "plot.homoLumo" = "HOMO %.4f · LUMO %.4f";
 "plot.minimum" = "极小值：%@，%@";
@@ -129,6 +140,12 @@
 "results.localized.lonePairs" = "孤对电子";
 "results.localized.valence" = "价数（双中心键）";
 "results.localized.note" = "移植自 JANPA 2.02，占据数与轨道数与参考程序在其打印精度内一致。每个键与孤对电子容纳两个电子；价数为每个原子上的键数。";
+"results.localization" = "定域化轨道（内禀方法）";
+"results.localization.delocalised" = "离域";
+"results.localization.objective" = "目标函数";
+"results.localization.population" = "布居";
+"results.localization.sweeps" = "Jacobi 扫描轮数";
+"results.localization.note" = "移植自 Multiwfn 2026.10.18 的轨道定域化。这些方法旋转正则占据轨道，使轨道的某种性质达到驻定，因此给出的中心是轨道所在的位置，而非键的归属。目标函数仅在同一方法、同一基组的不同计算之间可比。";
 "results.npa.sumMismatch" = "求和规则不满足——各轨道占据数之和应等于电子数。";
 "results.npa.sumRule" = "占据数合计 / 电子数";
 "results.naturalOrbitals" = "自然原子轨道";

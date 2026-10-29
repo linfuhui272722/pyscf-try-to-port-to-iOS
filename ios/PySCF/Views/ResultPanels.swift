@@ -22,6 +22,7 @@ struct ScfResultPanels: View {
             chargesPanel
             naturalPanel
             localizedOrbitalsPanel
+            intrinsicLocalizationPanel
             mayerPanel
             dipolePanel
         }
@@ -196,6 +197,52 @@ struct ScfResultPanels: View {
         let elements = result.mulliken.perAtom.map(\.element)
         guard index < elements.count else { return "#\(index + 1)" }
         return "\(elements[index])\(index + 1)"
+    }
+
+    /// Intrinsic localisation: Pipek-Mezey, Foster-Boys or ER.
+    ///
+    /// Unlike the JANPA panel above, there are no hybrids or bond labels to
+    /// show, because these methods do not build hybrids.  What tells the user
+    /// whether the result is chemical is where each orbital sits, so the
+    /// panel lists each orbital's dominant centres alongside its objective.
+    @ViewBuilder
+    private var intrinsicLocalizationPanel: some View {
+        if let localization = result.localization, localization.orbitalCount > 0 {
+            Panel(title: L("results.localization"), systemImage: "target") {
+                Text(localization.family)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(0..<localization.orbitalCount, id: \.self) { orbital in
+                    let centres = localization.centres(ofOrbital: orbital)
+                    MetricRow(
+                        label: "LMO \(orbital + 1)",
+                        value: centres.isEmpty
+                            ? L("results.localization.delocalised")
+                            : centres.map { elementLabel($0) }.joined(separator: " \u{2013} ")
+                    )
+                }
+
+                Divider()
+                MetricRow(
+                    label: L("results.localization.objective"),
+                    value: String(format: "%.8f", localization.objective)
+                )
+                if !localization.population.isEmpty {
+                    MetricRow(
+                        label: L("results.localization.population"),
+                        value: localization.population
+                    )
+                }
+                MetricRow(
+                    label: L("results.localization.sweeps"),
+                    value: "\(localization.sweeps)"
+                )
+                Text(L("results.localization.note"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// Mayer bond orders. Sorted strongest first, because a bond order is read

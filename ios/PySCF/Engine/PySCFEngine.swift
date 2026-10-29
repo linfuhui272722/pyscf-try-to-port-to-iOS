@@ -174,6 +174,36 @@ struct PySCFEngine {
         }
     }
 
+    /// Evaluates one molecular orbital on a grid, for the orbital viewer.
+    ///
+    /// ``index`` counts from zero over ``mo_coeff``, matching the energy
+    /// ladder.  This is a separate call rather than part of ``scf`` because a
+    /// cube per orbital would bloat every payload, and the viewer only ever
+    /// draws the one orbital the user picked.
+    func orbitalGrid(
+        atoms: String,
+        index: Int,
+        method: String = "RHF",
+        basis: String = "sto-3g",
+        xc: String = "b3lyp",
+        charge: Int = 0,
+        spin: Int = 0,
+        pointsPerAxis: Int = 22
+    ) async throws -> OrbitalCube {
+        try await run {
+            OrbitalCube(try call("orbital_grid", [
+                "atoms": atoms,
+                "method": method,
+                "basis": basis,
+                "xc": xc,
+                "charge": charge,
+                "spin": spin,
+                "index": index,
+                "pointsPerAxis": pointsPerAxis,
+            ]))
+        }
+    }
+
     /// Runs MP2 on top of the requested reference.
     ///
     /// ``charge`` and ``spin`` describe the molecule, not the correlation

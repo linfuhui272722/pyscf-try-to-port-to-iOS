@@ -207,6 +207,7 @@ struct BuilderView: View {
 
             if model.calculation == .scf || model.calculation == .dft {
                 Toggle(L("builder.densityCube"), isOn: $model.wantGrid)
+                Toggle(L("builder.localization"), isOn: $model.wantLocalization)
             }
 
             Divider()

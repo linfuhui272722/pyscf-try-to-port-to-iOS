@@ -316,6 +316,40 @@ do {
     expect(!text.contains("\"values\""), "the report carries no raw density cube")
 }
 
+print("text export of intrinsic localization")
+do {
+    // The localisation section is driven by an opt-in field, so a report built
+    // from a run that did not request it must simply omit the section rather
+    // than print an empty one.
+    let plain = HistoryReport.text(for: HistoryEntry(
+        id: "report-plain", date: Date(), kind: .scf, method: "RHF", basis: "6-31g",
+        atoms: "O 0 0 0", energy: -75.0, converged: true, wallTimeMs: 0,
+        summary: "", payload: HistoryStore.stripped(fixture("scf"))))
+    expect(!plain.contains("Localized orbitals (intrinsic"),
+           "a run without localisation omits the section")
+
+    let payload = HistoryStore.stripped(fixture("scf_localized"))
+    let result = ScfResult(payload)
+    let text = HistoryReport.text(for: HistoryEntry(
+        id: "report-loc", date: Date(), kind: .scf, method: "RHF", basis: "6-31g",
+        atoms: "O 0 0 0; H 0 0 0.96; H 0 0.9 -0.3",
+        energy: result.energy, converged: true, wallTimeMs: 0,
+        summary: "", payload: payload))
+
+    if let localization = result.localization {
+        expect(text.contains("Localized orbitals (intrinsic, \(localization.localization))"),
+               "the section names the method")
+        expect(text.contains(String(format: "%.8f", localization.objective)),
+               "the objective is in the report (\(localization.objective))")
+        // Every orbital gets a line, so a molecule's localised set is fully
+        // described rather than truncated at the first few.
+        expect((0..<localization.orbitalCount).allSatisfy { text.contains("LMO \($0 + 1)") },
+               "every orbital has a line")
+    } else {
+        expect(false, "the localised fixture carried no localisation")
+    }
+}
+
 print("the list energy agrees with the payload")
 do {
     // The list shows the cached energy and the report shows the payload's. A

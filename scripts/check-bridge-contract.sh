@@ -90,6 +90,16 @@ fixtures = {
     "geometry_helium": call("geometry", {"atoms": "He 0 0 0"}),
     "scf": call("scf", {"atoms": WATER, "basis": "sto-3g", "method": "RHF", "include": ["grid", "mo"]}),
     "dft": call("dft", {"atoms": WATER, "basis": "sto-3g", "method": "RKS", "xc": "b3lyp", "include": []}),
+    # Intrinsic localisation is opt-in, so it needs its own fixture: the panel
+    # is driven by a field the default SCF call does not produce.
+    "scf_localized": call("scf", {"atoms": WATER, "basis": "6-31g", "method": "RHF",
+                                  "include": ["localization"]}),
+    "scf_boys": call("scf", {"atoms": WATER, "basis": "6-31g", "method": "RHF",
+                             "include": ["localization:boys"]}),
+    # The orbital viewer fetches one cube per selection rather than carrying a
+    # cube per orbital in the SCF payload.
+    "orbital_grid": call("orbital_grid", {"atoms": WATER, "basis": "sto-3g", "method": "RHF",
+                                          "index": 3}),
     "mp2": call("mp2", {"atoms": WATER, "basis": "sto-3g", "reference": "RHF", "include": []}),
     "ccsd": call("ccsd", {"atoms": WATER, "basis": "sto-3g", "reference": "RHF", "include": []}),
     "bond_scan": call("bond_scan", {"atoms": WATER, "i": 0, "j": 1, "method": "RHF",

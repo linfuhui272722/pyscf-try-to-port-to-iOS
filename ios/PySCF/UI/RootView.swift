@@ -219,6 +219,7 @@ struct OrbitalsScreen: View {
                             MetricRow(label: "MO \(index + 1)", value: String(format: "%.3f", occupation))
                         }
                     }
+                    orbitalViewerPanel(result)
                 } else {
                     Panel(title: L("orbitals.empty.title"), systemImage: "hourglass") {
                         Text(L("orbitals.empty.body"))
@@ -231,5 +232,88 @@ struct OrbitalsScreen: View {
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle(L("screen.orbitals"))
+    }
+
+    /// The orbital viewer: pick an orbital from the ladder, see its shape.
+    ///
+    /// The cube is fetched on selection rather than with the run, so the
+    /// selector is a list of buttons rather than a picker bound to the model:
+    /// choosing one has to start a request, and a picker would appear to have
+    /// already switched to a cube that has not arrived.
+    @ViewBuilder
+    private func orbitalViewerPanel(_ result: ScfResult) -> some View {
+        Panel(title: L("orbitals.viewer"), systemImage: "cube") {
+            if result.orbitalEnergies.isEmpty {
+                Text(L("orbitals.viewer.unavailable"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(L("orbitals.viewer.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(result.orbitalEnergies.enumerated()), id: \.offset) { index, energy in
+                            let occupation = index < result.occupations.count ? result.occupations[index] : 0
+                            Button {
+                                Task { await model.loadOrbital(index) }
+                            } label: {
+                                VStack(spacing: 2) {
+                                    Text("\(index + 1)").font(.caption.monospacedDigit().bold())
+                                    Text(String(format: "%.3f", energy))
+                                        .font(.caption2.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    model.viewedOrbital == index
+                                        ? Color.accentColor.opacity(0.25)
+                                        : Color(.secondarySystemBackground),
+                                    in: RoundedRectangle(cornerRadius: 8)
+                                )
+                                .overlay(alignment: .topTrailing) {
+                                    // A dot marks the occupied orbitals, so the
+                                    // virtual ones are not mistaken for electrons.
+                                    if occupation > 0.5 {
+                                        Circle().fill(Color.accentColor)
+                                            .frame(width: 5, height: 5)
+                                            .padding(3)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                if model.isLoadingOrbital {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text(L("orbitals.viewer.loading"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if let cube = model.orbitalCube {
+                    OrbitalSliceView(cube: cube, zIndex: cube.grid.shape.count == 3 ? cube.grid.shape[2] / 2 : 0)
+                    MetricRow(
+                        label: L("orbitals.viewer.orbital"),
+                        value: LF("orbitals.viewer.selection",
+                                  cube.index + 1,
+                                  String(format: "%.5f", cube.orbitalEnergy),
+                                  String(format: "%.2f", cube.occupation))
+                    )
+                    MetricRow(
+                        label: L("orbitals.viewer.phase"),
+                        value: L("orbitals.viewer.phase.legend")
+                    )
+                    Text(L("orbitals.viewer.note"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }

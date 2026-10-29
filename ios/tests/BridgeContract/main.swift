@@ -167,6 +167,80 @@ do {
     }
 }
 
+print("intrinsic localization")
+do {
+    // Opt-in: absent unless the request asked for it.
+    let plain = ScfResult(fixture("scf"))
+    expect(plain.localization == nil, "the default SCF call does not compute localisation")
+
+    let localized = ScfResult(fixture("scf_localized"))
+    if let localization = localized.localization {
+        expect(localization.localization == "pm-mulliken",
+               "a bare request selects Pipek-Mezey (\(localization.localization))")
+        expect(localization.family == "Pipek-Mezey", "family named (\(localization.family))")
+        expect(localization.population == "Mulliken", "population named (\(localization.population))")
+        expect(localization.orbitalCount == 5, "water has five occupied orbitals (\(localization.orbitalCount))")
+        expect(localization.centroids.count == localization.orbitalCount, "one centroid per orbital")
+        expect(localization.centroids.allSatisfy { $0.count == 3 }, "centroids are 3D")
+        expect(localization.sweeps > 0, "sweeps recorded (\(localization.sweeps))")
+        expect(localization.objective > 0, "objective recorded (\(localization.objective))")
+        expect(localization.analysisMethod.contains("Multiwfn"), "method names the reference (\(localization.analysisMethod))")
+
+        // The composition is the point of the panel: an orbital that sits on
+        // one atom is a lone pair, one that sits on two is a bond.  Both must
+        // appear for water, or the panel would show the same label five times.
+        let centreCounts = (0..<localization.orbitalCount).map { localization.centres(ofOrbital: $0).count }
+        expect(centreCounts.contains(1), "at least one one-centre orbital (\(centreCounts))")
+        expect(centreCounts.contains(2), "at least one two-centre orbital (\(centreCounts))")
+        expect(centreCounts.allSatisfy { $0 <= 2 }, "no orbital spans more than two centres (\(centreCounts))")
+
+        // Every orbital's populations add up to one electron pair's worth of
+        // population, which is what makes the composition readable as a share.
+        for orbital in 0..<localization.orbitalCount {
+            let total = (0..<localization.perAtom.count)
+                .compactMap { localization.population(atom: $0, orbital: orbital) }
+                .reduce(0, +)
+            expect(abs(total - 1.0) < 1e-3,
+                   "orbital \(orbital + 1) populations sum to 1 (\(total))")
+        }
+    } else {
+        expect(false, "localisation missing from the payload that asked for it")
+    }
+
+    // The objective can be chosen per request.
+    let boys = ScfResult(fixture("scf_boys"))
+    expect(boys.localization?.localization == "boys",
+           "an explicit method is honoured (\(boys.localization?.localization ?? "nil"))")
+    expect(boys.localization?.family == "Foster-Boys", "Boys family named")
+}
+
+print("orbital grid")
+do {
+    let cube = OrbitalCube(fixture("orbital_grid"))
+    expect(cube.index == 3, "the requested orbital index is echoed (\(cube.index))")
+    expect(cube.nBasis == 7, "basis size reported (\(cube.nBasis))")
+    expect(cube.occupation > 0.5, "orbital 4 of water is occupied (\(cube.occupation))")
+    expect(cube.isOccupied, "isOccupied agrees with the occupation")
+    expect(cube.orbitalEnergy < 0, "an occupied orbital has negative energy (\(cube.orbitalEnergy))")
+    expect(cube.grid.shape == [22, 22, 22], "cube is 22^3 (\(cube.grid.shape))")
+    expect(cube.grid.values.count == 22 * 22 * 22, "cube values match shape")
+
+    // The cube is signed: an orbital has both phases.  A payload that had
+    // squared or taken the absolute value would pass every other check here
+    // but render as a single colour, so the sign is asserted directly.
+    expect(cube.grid.values.contains { $0 > 0.01 }, "the cube has a positive lobe")
+    expect(cube.grid.values.contains { $0 < -0.01 }, "the cube has a negative lobe")
+    expect(cube.peak > 0, "peak magnitude is positive (\(cube.peak))")
+
+    // The amplitude is the cube normalised by the peak magnitude, so it stays
+    // in -1...1 and reaches both ends.
+    let amplitudes = cube.grid.values.map { $0 / cube.peak }
+    expect(amplitudes.allSatisfy { $0 >= -1.0001 && $0 <= 1.0001 }, "amplitudes stay within -1...1")
+    expect(abs(amplitudes.map(abs).max()! - 1) < 1e-9, "the peak magnitude reaches 1")
+    expect(cube.amplitude(x: 0, y: 0, z: 0) != nil, "a voxel is readable")
+    expect(cube.amplitude(x: -1, y: 0, z: 0) == nil, "an out-of-range voxel is nil")
+}
+
 print("ccsd")
 do {
     let ccsd = ScfResult(fixture("ccsd"))

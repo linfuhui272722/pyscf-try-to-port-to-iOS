@@ -22,7 +22,7 @@ import time
 import traceback
 from typing import Any, Iterable
 
-from . import geometry, localized_orbitals, natural_orbitals
+from . import geometry, localized_orbitals, natural_orbitals, orbital_localization
 from .diaglog import crash_probe, get_logger
 
 # --------------------------------------------------------------------------
@@ -576,6 +576,44 @@ def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: flo
     }
 
 
+def _orbital_grid(mf, atoms: list[dict], index: int,
+                  points_per_axis: int = 22, padding: float = 1.6) -> dict:
+    """Evaluate one molecular orbital on a coarse cubic grid.
+
+    Same shape as ``_density_grid`` so the Swift side reuses ``DensityGrid`` and
+    its slice renderer.  The values are signed -- an orbital has lobes of both
+    phases -- and the caller normalises by the peak magnitude, which is why the
+    sign is carried rather than squared away.
+
+    ``index`` is the orbital's position in ``mo_coeff``, the same numbering the
+    energy ladder shows.
+    """
+    coefficients = np.asarray(mf.mo_coeff, dtype=float)
+    if not 0 <= index < coefficients.shape[1]:
+        raise ValueError(f"orbital index {index} outside 0..{coefficients.shape[1] - 1}")
+    coords = geometry.atoms_to_coords(atoms)
+    lo = coords.min(axis=0) - padding
+    hi = coords.max(axis=0) + padding
+    axes = [np.linspace(lo[i], hi[i], points_per_axis) for i in range(3)]
+    gx, gy, gz = np.meshgrid(*axes, indexing="ij")
+    flat = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
+    # A closed-shell reference stores both spins in one block; an unrestricted
+    # one stores them separately, and the orbital the user picked lives in the
+    # alpha block, which is column 0 of the pair.
+    column = coefficients[:, index]
+    if column.ndim > 1:
+        column = column[:, 0]
+    ao = mf.mol.eval_gto("GTOval", flat)
+    values = ao @ column
+    return {
+        "index": int(index),
+        "shape": [points_per_axis] * 3,
+        "origin": [round(float(lo[i]), 6) for i in range(3)],
+        "step": [round(float((hi[i] - lo[i]) / (points_per_axis - 1)), 6) for i in range(3)],
+        "values": [round(float(v), 8) for v in np.asarray(values).ravel()],
+    }
+
+
 def _wants_density_fit(mol, params: dict) -> bool:
     """Decide whether to build the mean field with density fitting.
 
@@ -643,7 +681,7 @@ def _make_method(mol, method: str, xc: str, params: dict):
     return mf
 
 
-def _finalise(mf, atoms, method, basis, wall_ms, log, include) -> dict:
+def _finalise(mf, atoms, method, basis, wall_ms, log, include, localization=None) -> dict:
     result: dict[str, Any] = {
         "ok": True,
         "method": f"{method}/{basis}",
@@ -653,12 +691,18 @@ def _finalise(mf, atoms, method, basis, wall_ms, log, include) -> dict:
         "wallTimeMs": round(wall_ms, 3),
         "log": log[-4000:],
     }
-    result.update(_electronic_structure(mf, atoms, include))
+    result.update(_electronic_structure(mf, atoms, include, localization))
     return result
 
 
-def _electronic_structure(mf, atoms, include) -> dict:
-    """Orbital, population and density payloads for one converged calculation."""
+def _electronic_structure(mf, atoms, include, localization: str | None = None) -> dict:
+    """Orbital, population and density payloads for one converged calculation.
+
+    ``include`` is the set of extra payloads to compute.  ``localization`` is
+    kept out of it because the requested value carries the method name, which a
+    set cannot hold; ``None`` means the caller did not ask for localisation at
+    all.
+    """
     mo_energy = np.asarray(mf.mo_energy, dtype=float).ravel()
     mo_occ = np.asarray(mf.mo_occ, dtype=float).ravel()
     homo, lumo = _homo_lumo(mo_energy, mo_occ)
@@ -697,6 +741,14 @@ def _electronic_structure(mf, atoms, include) -> dict:
         result["density"] = np.asarray(mf.make_rdm1(), dtype=float).tolist()
     if "grid" in include:
         result["grid"] = _density_grid(mf, atoms)
+    # The intrinsic localisation methods are opt-in.  Edmiston-Ruedenberg is
+    # O(N^5) and even the cheap two are a Jacobi sweep over the occupied space,
+    # so they are not worth computing for a run whose panel is not being looked
+    # at.  An empty string asks for the default method; a name picks one.
+    if localization is not None:
+        result["localization"] = orbital_localization.localize(
+            mf, atoms, method=localization or "pm-mulliken"
+        )
     return result
 
 
@@ -740,6 +792,22 @@ def _run_mean_field(params: dict, dm0=None):
     return mf, atoms, basis, method, buf.getvalue()
 
 
+def _requested_localization(params: dict) -> str | None:
+    """The localisation method a request asks for, or ``None`` if it asks for none.
+
+    The value is read from the ``include`` list rather than a key of its own so
+    that it travels the same way as ``grid`` and ``mo``.  A bare ``"localization"``
+    entry means the default method; ``"localization:boys"`` names one.
+    """
+    for entry in params.get("include", []) or []:
+        text = str(entry).strip().lower()
+        if text == "localization":
+            return "pm-mulliken"
+        if text.startswith("localization:"):
+            return text.split(":", 1)[1] or "pm-mulliken"
+    return None
+
+
 def run_scf(params: dict, full: bool = True) -> dict:
     """Run a Hartree-Fock or Kohn-Sham calculation.
 
@@ -753,7 +821,8 @@ def run_scf(params: dict, full: bool = True) -> dict:
     start = time.perf_counter()
     mf, atoms, basis, method, log = _run_mean_field(params)
     wall_ms = (time.perf_counter() - start) * 1000.0
-    return _finalise(mf, atoms, method, basis, wall_ms, log, include)
+    return _finalise(mf, atoms, method, basis, wall_ms, log, include,
+                     _requested_localization(params))
 
 
 def _post_hf(params: dict, kind: str) -> dict:
@@ -779,7 +848,8 @@ def _post_hf(params: dict, kind: str) -> dict:
         mf.e_tot = scf_energy + e_corr
     wall_ms = (time.perf_counter() - start) * 1000.0
     label = f"{kind.upper()}({reference.upper()})"
-    result = _finalise(mf, mol_atoms, label, basis, wall_ms, buf.getvalue(), include)
+    result = _finalise(mf, mol_atoms, label, basis, wall_ms, buf.getvalue(), include,
+                       _requested_localization(params))
     result["correlationEnergy"] = round(e_corr, 10)
     result["scfEnergy"] = round(scf_energy, 10)
     return result
@@ -1045,7 +1115,8 @@ def run_geometry_optimisation(params: dict) -> dict:
         "log": "\n".join(call_log)[-4000:],
     }
     if mf is not None:
-        result.update(_electronic_structure(mf, angstrom_atoms, include))
+        result.update(_electronic_structure(mf, angstrom_atoms, include,
+                                            _requested_localization(params)))
     return result
 
 
@@ -1092,6 +1163,64 @@ def run_wiberg(params: dict) -> dict:
         "energy": round(float(mf.e_tot), 10),
         "wallTimeMs": round(wall_ms, 3),
         **bonds,
+    }
+
+
+def run_intrinsic_localization(params: dict) -> dict:
+    """Pipek-Mezey, Foster-Boys or Edmiston-Ruedenberg localised orbitals.
+
+    ``kind`` selects the objective: ``"pm-mulliken"``, ``"pm-lowdin"``,
+    ``"boys"`` or ``"er"``.  These are the intrinsic methods, which optimise a
+    property of the occupied orbitals directly, as opposed to the JANPA
+    LPO/CLPO orbitals that ``run_localized_orbitals`` returns and which are
+    built from natural atomic orbitals.
+
+    The objective is read from ``kind`` rather than ``method`` because
+    ``method`` is the mean-field reference (RHF, B3LYP, ...) throughout this
+    module.
+    """
+    start = time.perf_counter()
+    mf, atoms, basis, method, _log = _run_mean_field(params)
+    wall_ms = (time.perf_counter() - start) * 1000.0
+    variant = str(params.get("kind", "pm-mulliken")).lower()
+    result = orbital_localization.localize(mf, atoms, method=variant)
+    if result is None:
+        raise ValueError("orbital localisation is unavailable for this wavefunction")
+    return {
+        "ok": True,
+        "method": f"{method}/{basis}",
+        "energy": round(float(mf.e_tot), 10),
+        "wallTimeMs": round(wall_ms, 3),
+        **result,
+    }
+
+
+def run_orbital_grid(params: dict) -> dict:
+    """Evaluate one molecular orbital on a grid, for the orbital viewer.
+
+    ``index`` selects the orbital in the same numbering the energy ladder uses,
+    counting from zero over ``mo_coeff``.  The result carries the orbital's
+    energy and occupation alongside the cube, so the viewer can label what it
+    is drawing without a second round trip.
+    """
+    start = time.perf_counter()
+    mf, atoms, basis, method, _log = _run_mean_field(params)
+    index = int(params.get("index", 0))
+    points = int(params.get("pointsPerAxis", 22))
+    grid = _orbital_grid(mf, atoms, index, points_per_axis=points)
+    wall_ms = (time.perf_counter() - start) * 1000.0
+    energies = np.asarray(mf.mo_energy, dtype=float).ravel()
+    occupations = np.asarray(mf.mo_occ, dtype=float).ravel()
+    return {
+        "ok": True,
+        "method": f"{method}/{basis}",
+        "energy": round(float(mf.e_tot), 10),
+        "wallTimeMs": round(wall_ms, 3),
+        "index": index,
+        "orbitalEnergy": round(float(energies[index]), 8),
+        "occupation": round(float(occupations[index]), 6),
+        "nBasis": int(mf.mol.nao_nr()),
+        "grid": grid,
     }
 
 
@@ -1161,7 +1290,14 @@ def dispatch(method: str, params: dict) -> dict:
         # explicit kind while "clpo" can still be asked for anything.
         "lpo": lambda params: run_localized_orbitals({**params, "kind": params.get("kind", "lpo")}),
         "clpo": lambda params: run_localized_orbitals({**params, "kind": params.get("kind", "clpo")}),
+        # The intrinsic methods, each named after its objective.  The objective
+        # travels in "kind" because "method" is the mean-field reference here.
+        "pm": run_intrinsic_localization,
+        "pipek_mezey": run_intrinsic_localization,
+        "boys": lambda params: run_intrinsic_localization({**params, "kind": "boys"}),
+        "er": lambda params: run_intrinsic_localization({**params, "kind": "er"}),
         "optimise": run_geometry_optimisation,
+        "orbital_grid": run_orbital_grid,
     }
     if method not in handlers:
         raise ValueError(f"unknown method: {method!r}")

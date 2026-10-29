@@ -684,6 +684,69 @@ struct LocalizedOrbital: Identifiable, Hashable {
     }
 }
 
+/// An intrinsic localisation result: Pipek-Mezey, Foster-Boys or ER.
+///
+/// Distinct from ``LocalizedOrbitals``, which holds JANPA's LPO/CLPO orbitals
+/// built on natural atomic orbitals.  These methods rotate the canonical
+/// occupied orbitals so that a property of the orbitals themselves is
+/// stationary, so there are no hybrids and no two-centre labels -- what is
+/// carried is the objective, the Foster-Boys centroids, and how the Mulliken
+/// population of each orbital is spread over the atoms.
+struct LocalizationResult {
+    var localization: String
+    var family: String
+    var population: String
+    var sweeps: Int
+    var objective: Double
+    /// One `[x, y, z]` centroid per orbital, in Bohr.
+    var centroids: [[Double]]
+    /// Per-atom Mulliken populations, `perAtom[atom][orbital]`.
+    var perAtom: [[Double]]
+    /// The same numbers as percentages, for display.
+    var percent: [[Double]]
+    var analysisMethod: String
+
+    init(_ json: JSONObject) {
+        localization = json.value("localization") as String? ?? ""
+        family = json.value("family") as String? ?? ""
+        population = json.value("population") as String? ?? ""
+        sweeps = json.integer("sweeps") ?? 0
+        objective = json.number("objective") ?? 0
+        centroids = (json.raw["centroids"] as? [[Any]])?
+            .map { $0.compactMap { ($0 as? NSNumber)?.doubleValue } } ?? []
+        let compositions = json.object("compositions")
+        perAtom = compositions?.raw["perAtom"] as? [[Double]] ?? []
+        percent = compositions?.raw["percent"] as? [[Double]] ?? []
+        analysisMethod = json.value("analysisMethod") as String? ?? ""
+    }
+
+    var orbitalCount: Int { centroids.count }
+
+    /// The population of one orbital on one atom, or `nil` if absent.
+    func population(atom: Int, orbital: Int) -> Double? {
+        guard atom >= 0, atom < perAtom.count else { return nil }
+        let row = perAtom[atom]
+        guard orbital >= 0, orbital < row.count else { return nil }
+        return row[orbital]
+    }
+
+    /// The atoms an orbital sits on, heaviest contribution first.
+    ///
+    /// A threshold rather than a fixed count, because a localised orbital is
+    /// supposed to be dominated by one or two centres: a diffuse or a
+    /// delocalised one is worth seeing as such, not padded out to two atoms.
+    func centres(ofOrbital orbital: Int, threshold: Double = 0.10) -> [Int] {
+        (0..<perAtom.count)
+            .compactMap { atom -> (Int, Double)? in
+                guard let value = population(atom: atom, orbital: orbital) else { return nil }
+                return value >= threshold ? (atom, value) : nil
+            }
+            .sorted { $0.1 > $1.1 }
+            .map(\.0)
+    }
+}
+
+
 /// One hybrid's share of a localised orbital.
 struct LocalizedOrbitalComponent: Identifiable, Hashable {
     var centre: Int
@@ -753,6 +816,46 @@ struct DensityGrid {
     }
 }
 
+/// One molecular orbital evaluated on a grid, for the orbital viewer.
+///
+/// The cube is signed: an orbital has lobes of both phases, and the sign is
+/// what distinguishes them, so it is carried rather than folded away.  A
+/// renderer normalises by ``peak`` and colours the two signs differently.
+struct OrbitalCube {
+    var index: Int
+    var orbitalEnergy: Double
+    var occupation: Double
+    var nBasis: Int
+    var grid: DensityGrid
+
+    init(_ json: JSONObject) {
+        index = json.integer("index") ?? 0
+        orbitalEnergy = json.number("orbitalEnergy") ?? 0
+        occupation = json.number("occupation") ?? 0
+        nBasis = json.integer("nBasis") ?? 0
+        grid = DensityGrid(json.object("grid") ?? JSONObject([:]))
+    }
+
+    /// The largest magnitude in the cube, or 1 when it is empty.
+    ///
+    /// The magnitude, not the value: an orbital's most negative lobe is as
+    /// significant as its most positive one, and normalising by the signed
+    /// peak would blow the other phase out of range.
+    var peak: Double {
+        let magnitude = grid.values.reduce(0.0) { max($0, abs($1)) }
+        return magnitude > 0 ? magnitude : 1
+    }
+
+    /// A voxel as a signed fraction of the peak, in -1...1.
+    func amplitude(x: Int, y: Int, z: Int) -> Double? {
+        guard let value = grid.value(x: x, y: y, z: z) else { return nil }
+        return value / peak
+    }
+
+    /// Whether the orbital is occupied, i.e. whether it is one of the electrons.
+    var isOccupied: Bool { occupation > 0.5 }
+}
+
 /// The shared result shape returned by scf/dft/mp2/ccsd.
 struct ScfResult {
     var method: String
@@ -773,6 +876,8 @@ struct ScfResult {
     var npa: NaturalPopulationAnalysis?
     var naturalOrbitals: NaturalOrbitals?
     var localizedOrbitals: LocalizedOrbitals?
+    /// Intrinsic localisation (Pipek-Mezey, Foster-Boys, ER), when requested.
+    var localization: LocalizationResult?
     var mayer: MayerAnalysis?
     var wallTimeMs: Double
     var log: String
@@ -808,6 +913,7 @@ struct ScfResult {
         npa = json.object("npa").map(NaturalPopulationAnalysis.init)
         naturalOrbitals = json.object("naturalOrbitals").map(NaturalOrbitals.init)
         localizedOrbitals = json.object("localizedOrbitals").map(LocalizedOrbitals.init)
+        localization = json.object("localization").map(LocalizationResult.init)
         mayer = json.object("mayer").map(MayerAnalysis.init)
         wallTimeMs = json.number("wallTimeMs") ?? 0
         log = json.value("log") as String? ?? ""

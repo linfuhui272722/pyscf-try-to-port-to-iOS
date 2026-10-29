@@ -16,6 +16,7 @@
 "builder.charge" = "Charge: %d";
 "builder.compute" = "Compute %@";
 "builder.densityCube" = "Density cube (for the Density tab)";
+"builder.localization" = "Localized orbitals (Pipek-Mezey, Foster-Boys or ER)";
 "builder.formula" = "Formula";
 "builder.functional" = "Functional";
 "builder.geometry" = "Geometry";
@@ -100,6 +101,16 @@
 "orbitals.empty.title" = "No orbitals yet";
 "orbitals.ladder" = "Orbital ladder — %@";
 "orbitals.occupations" = "Occupations";
+"orbitals.viewer" = "Orbital shape";
+"orbitals.viewer.hint" = "Choose an orbital to draw its amplitude through the centre of the molecule. A dot marks the occupied orbitals.";
+"orbitals.viewer.loading" = "Evaluating the orbital...";
+"orbitals.viewer.orbital" = "Orbital";
+"orbitals.viewer.selection" = "MO %d   %@ Ha   occ %@";
+"orbitals.viewer.phase" = "Phase";
+"orbitals.viewer.phase.legend" = "red +, blue \u2212";
+"orbitals.viewer.note" = "A slice through the middle of the orbital. The two colours are the two phases; the transparent band is the node, where the amplitude changes sign. Only a slice is drawn, so a lobe that lies in front of or behind the plane appears as its cross-section.";
+"orbitals.viewer.unavailable" = "No orbital energies to draw. Run a calculation first.";
+"orbitals.noCube" = "No orbital selected";
 "plot.gap" = "HOMO–LUMO gap";
 "plot.homoLumo" = "HOMO %.4f · LUMO %.4f";
 "plot.minimum" = "Minimum: %@ at %@";
@@ -129,6 +140,12 @@
 "results.localized.lonePairs" = "Lone pairs";
 "results.localized.valence" = "Valence (two-centre bonds)";
 "results.localized.note" = "A port of JANPA 2.02, which reproduces the reference program's occupancies and orbital counts to its printed precision. Each bond and lone pair holds two electrons; the valence counts the bonds on each atom.";
+"results.localization" = "Localized orbitals (intrinsic)";
+"results.localization.delocalised" = "delocalised";
+"results.localization.objective" = "Objective";
+"results.localization.population" = "Population";
+"results.localization.sweeps" = "Jacobi sweeps";
+"results.localization.note" = "A port of Multiwfn 2026.10.18's orbital localisation. These methods rotate the canonical occupied orbitals so that a property of the orbitals is stationary, so the centres are where each orbital sits rather than a bond assignment. The objective is comparable between runs of the same method and basis, not across them.";
 "results.npa.sumMismatch" = "Sum rule not satisfied - the occupations should add up to the electron count.";
 "results.npa.sumRule" = "Occupancy sum / electrons";
 "results.naturalOrbitals" = "Natural atomic orbitals";

@@ -168,6 +168,14 @@ final class AppModel: ObservableObject {
     @Published var charge: Int = 0
     @Published var spin: Int = 0
     @Published var wantGrid: Bool = true
+    /// Requests the intrinsic localisation (Pipek-Mezey by default).
+    @Published var wantLocalization: Bool = false
+    /// The orbital the viewer is drawing, or nil for none yet.
+    @Published var viewedOrbital: Int?
+    /// The cube for ``viewedOrbital``, once fetched.
+    @Published var orbitalCube: OrbitalCube?
+    /// Set while the orbital cube is being fetched.
+    @Published var isLoadingOrbital: Bool = false
     @Published var scanI: Int = 0
     @Published var scanJ: Int = 1
     @Published var maxOptimisationSteps: Int = 40
@@ -507,6 +515,7 @@ final class AppModel: ObservableObject {
 
         var include: [String] = []
         if wantGrid { include.append("grid") }
+        if wantLocalization { include.append("localization") }
         include.append("mo")
 
         let spec = atomSpec
@@ -540,6 +549,10 @@ final class AppModel: ObservableObject {
             result = output
             scan = nil
             optimisation = nil
+            // A new run invalidates the orbital the viewer was drawing: the
+            // cube belongs to the old wavefunction.
+            viewedOrbital = nil
+            orbitalCube = nil
             logText = output.log
             screen = .results
             recordHistory(kind: historyKind(for: calculation),
@@ -561,6 +574,33 @@ final class AppModel: ObservableObject {
             if output.converged == false {
                 log("warning: SCF did not converge in \(output.cycles) cycles")
             }
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Fetches the cube for one orbital and shows it.
+    ///
+    /// Kept out of ``run`` because it is a second round trip: the orbital the
+    /// user wants is not known until they pick one from the ladder, and
+    /// fetching every cube up front would be many times the cost of the run
+    /// that produced them.
+    func loadOrbital(_ index: Int) async {
+        guard result != nil else { return }
+        isLoadingOrbital = true
+        defer { isLoadingOrbital = false }
+        do {
+            let cube = try await engine.orbitalGrid(
+                atoms: atomSpec,
+                index: index,
+                method: calculation.usesFunctional
+                    ? (spin > 0 ? "UKS" : "RKS") : (spin > 0 ? "ROHF" : "RHF"),
+                basis: basis,
+                xc: functional,
+                charge: charge,
+                spin: spin)
+            viewedOrbital = index
+            orbitalCube = cube
         } catch {
             report(error)
         }

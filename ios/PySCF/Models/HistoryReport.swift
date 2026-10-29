@@ -170,6 +170,23 @@ enum HistoryReport {
             lines.append("")
         }
 
+        if let localization = result.localization, localization.orbitalCount > 0 {
+            lines.append(section("Localized orbitals (intrinsic, \(localization.localization))"))
+            for orbital in 0..<localization.orbitalCount {
+                let centres = localization.centres(ofOrbital: orbital)
+                let name = centres.isEmpty
+                    ? "delocalised"
+                    : centres.map { index in
+                        let elements = result.mulliken.perAtom.map(\.element)
+                        return index < elements.count ? "\(elements[index])\(index + 1)" : "#\(index + 1)"
+                    }.joined(separator: "-")
+                lines.append(row("LMO \(orbital + 1)", name))
+            }
+            lines.append(row("Objective", String(format: "%.8f", localization.objective)))
+            lines.append(row("Sweeps", "\(localization.sweeps)"))
+            lines.append("")
+        }
+
         if let mayer = result.mayer, !mayer.bonds.isEmpty {
             lines.append(section("Mayer bond orders"))
             for bond in mayer.bonds.sorted(by: { $0.order > $1.order }) {
