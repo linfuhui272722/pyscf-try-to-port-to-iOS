@@ -407,9 +407,12 @@ build. The copy uses `src/pyscf_mobile/.` into the existing directory, because
 `cp -R src/pyscf_mobile target/` where `target/pyscf_mobile` exists copies
 *into* it and produces `pyscf_mobile/pyscf_mobile`.
 
-Compiled modules such as `_pyscf_mobile_accel.cpython-313-iphoneos.so` are not
-in `src/`; they come only from the tarball and must survive the overlay. Check
-they are still present after changing the staging code.
+Deleting a module has the mirror problem: the copy only adds, so a `.py` removed
+from `src/` stays in the tarball's copy and keeps shipping. The overlay now walks
+the staged package and removes any `.py` that `src/` no longer has, which is how
+`nbo.py` stopped going out. Compiled modules such as
+`_pyscf_mobile_accel.cpython-313-iphoneos.so` are not in `src/` at all, so the
+prune skips them; check they are still present after changing the staging code.
 
 If a Python change seems to have no effect on device, verify it is actually in
 the bundle before debugging anything else:
@@ -418,6 +421,31 @@ the bundle before debugging anything else:
 grep -c SOME_NEW_SYMBOL \
   build/products/ios-arm64/PySCF.app/python/lib/python3.13/site-packages/pyscf_mobile/engine.py
 ```
+
+## Numeric tests against a Java reference
+
+The LPO/CLPO port (`src/pyscf_mobile/localized_orbitals.py`) is checked against
+JANPA 2.02 itself: write a MOLDEN with `pyscf.tools.molden.from_scf`, run
+`java -jar janpa.jar -i file.molden`, and read the `>> LPO` / `>> CLPO` tables.
+A hand-transcribed table is not good enough -- the first one in the test file
+was wrong and made an exact port look broken.
+
+Two things make that comparison looser than it looks, and both are properties of
+the reference, not of the port:
+
+* JANPA stops its hybrid optimiser at a target-function change of 1e-5, the same
+  order as the last digit it prints, so re-running it on one unchanged
+  wavefunction moves a sum by up to 2e-5. `OCCUPANCY_TOLERANCE` is 3e-5 for that
+  reason.
+* The LPO functional has two near-degenerate optima for some molecules (water in
+  cc-pvdz, carbon dioxide in 6-31g). JANPA prints both across runs, and which one
+  a run reaches depends on the last bits of the density -- which BLAS sets by
+  summing a contraction in whatever order the thread count implies. The test
+  accepts either optimum from `LPO_ALTERNATIVES`.
+
+So a threaded build can disagree with a serial one for identical input. Before
+suspecting the port, reproduce with `OMP_NUM_THREADS=1`: if the answer snaps to
+the reference, it was thread-order noise, not a bug.
 
 ## Crash diagnostics
 
