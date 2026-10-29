@@ -63,6 +63,10 @@ _METHODS = {
     "er": ("Edmiston-Ruedenberg", ""),
 }
 
+#: The intrinsic localisation methods, for callers that need to validate a name
+#: or offer the list in a UI.
+METHODS = tuple(_METHODS)
+
 
 def _atom_blocks(mol) -> list[np.ndarray]:
     """The basis functions of each atom, as index arrays into the AO basis.

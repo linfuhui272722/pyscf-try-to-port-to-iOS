@@ -13,9 +13,19 @@ import SwiftUI
 import SceneKit
 
 /// Ball-and-stick renderer for the current molecule.
+///
+/// When ``surface`` is set the orbital is drawn into the same scene as the
+/// molecule, as a translucent envelope around each lobe.  Sharing the scene is
+/// what puts the orbital at its correct position in the molecule: both are in
+/// the same absolute frame, so there is no alignment to get wrong.
 struct MoleculeView: UIViewRepresentable {
     let geometry: GeometryDescription?
     let elementTable: [Element]
+    /// The orbital to overlay, or ``nil`` for the molecule alone.
+    var surface: OrbitalSurface? = nil
+    /// Whether the orbital envelope is drawn, so the molecule can be seen
+    /// without it.
+    var showsOrbital: Bool = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -35,7 +45,9 @@ struct MoleculeView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: SCNView, context: Context) {
-        context.coordinator.update(geometry: geometry, elements: elementTable)
+        context.coordinator.update(
+            geometry: geometry, elements: elementTable,
+            surface: surface, showsOrbital: showsOrbital)
     }
 
     // MARK: - Node graph
@@ -49,11 +61,20 @@ struct MoleculeView: UIViewRepresentable {
     final class Coordinator {
         private let content = SCNNode()
         private let cameraNode = SCNNode()
+        /// The orbital envelope, kept separate from the molecule so hiding it
+        /// does not disturb the molecule's nodes or the camera.
+        private let orbitalNode = SCNNode()
         private var atomNodes: [Int: SCNNode] = [:]
         private var bondNodes: [SCNNode] = []
         /// Identifies the geometry currently built, so identical input does not
         /// rebuild the graph.
         private var signature = ""
+        /// Identifies the orbital currently built, so a rebuild only happens
+        /// when the orbital itself changes and not on every SwiftUI update.
+        private var orbitalSignature = ""
+        /// How far the current envelope reaches from the origin, so the camera
+        /// can frame it.
+        private var orbitalRadius: Double = 0
         private var cameraDistance: Double = 0
 
         func installRig(in view: SCNView) {
@@ -69,6 +90,9 @@ struct MoleculeView: UIViewRepresentable {
             view.pointOfView = cameraNode
 
             scene.rootNode.addChildNode(content)
+            // Added after the molecule so its translucent envelope blends over
+            // the atoms rather than being hidden behind them.
+            scene.rootNode.addChildNode(orbitalNode)
             installLights()
         }
 
@@ -100,9 +124,11 @@ struct MoleculeView: UIViewRepresentable {
             cameraNode.addChildNode(rimNode)
         }
 
-        func update(geometry: GeometryDescription?, elements: [Element]) {
+        func update(geometry: GeometryDescription?, elements: [Element],
+                    surface: OrbitalSurface? = nil, showsOrbital: Bool = true) {
             guard let geometry = geometry, !geometry.atoms.isEmpty else {
                 content.isHidden = true
+                orbitalNode.isHidden = true
                 return
             }
             content.isHidden = false
@@ -118,7 +144,125 @@ struct MoleculeView: UIViewRepresentable {
                 signature = current
                 rebuild(layout: layout, elements: elements)
             }
-            reframe(to: layout.cameraDistance)
+
+            let visible = showsOrbital ? surface : nil
+            updateOrbital(visible, centreOfMass: geometry.centreOfMass)
+            // The envelope can reach past the atoms, so it takes part in the
+            // framing; otherwise a diffuse orbital is cropped at the viewport.
+            reframe(to: layout.cameraDistance, orbitalRadius: orbitalNode.isHidden ? 0 : orbitalRadius)
+        }
+
+        /// Builds the orbital nodes, or hides them when there is no surface.
+        ///
+        /// Rebuilt only when the orbital changes: the surface arrives as a
+        /// fresh object on every load, so the signature is what stops a
+        /// re-render on each SwiftUI update from discarding the mesh.
+        private func updateOrbital(_ surface: OrbitalSurface?, centreOfMass: [Double]) {
+            guard let surface = surface else {
+                orbitalNode.isHidden = true
+                orbitalNode.childNodes.forEach { $0.removeFromParentNode() }
+                orbitalSignature = ""
+                orbitalRadius = 0
+                return
+            }
+            orbitalNode.isHidden = false
+
+            let current = "\(surface.source)|\(surface.index)|\(surface.isovalueFraction)|"
+                + "\(surface.triangleCount)|\(surface.pointsPerAxis)"
+            if orbitalSignature != current {
+                orbitalSignature = current
+                orbitalNode.childNodes.forEach { $0.removeFromParentNode() }
+                let meshes = OrbitalMeshPair(surface: surface, centreOfMass: centreOfMass)
+                if let positive = meshes.positive {
+                    orbitalNode.addChildNode(Self.makeOrbitalNode(positive, phase: .positive))
+                }
+                if let negative = meshes.negative {
+                    orbitalNode.addChildNode(Self.makeOrbitalNode(negative, phase: .negative))
+                }
+                orbitalRadius = meshes.boundingRadius
+            }
+        }
+
+        /// Which lobe a mesh is, which picks its colour.
+        enum Phase { case positive, negative }
+
+        /// A lobe as a SceneKit node, shaded by the mesh's own normals.
+        private static func makeOrbitalNode(_ mesh: OrbitalMesh, phase: Phase) -> SCNNode {
+            let source = SCNGeometrySource(
+                data: Data(bytes: mesh.vertexData, count: mesh.vertexData.count * MemoryLayout<Float>.size),
+                semantic: .vertex,
+                vectorCount: mesh.vertexCount,
+                usesFloatComponents: true,
+                componentsPerVector: 3,
+                bytesPerComponent: MemoryLayout<Float>.size,
+                dataOffset: 0,
+                dataStride: MemoryLayout<Float>.size * 6
+            )
+            let normalSource = SCNGeometrySource(
+                data: Data(bytes: mesh.vertexData, count: mesh.vertexData.count * MemoryLayout<Float>.size),
+                semantic: .normal,
+                vectorCount: mesh.vertexCount,
+                usesFloatComponents: true,
+                componentsPerVector: 3,
+                bytesPerComponent: MemoryLayout<Float>.size,
+                dataOffset: MemoryLayout<Float>.size * 3,
+                dataStride: MemoryLayout<Float>.size * 6
+            )
+            let element = SCNGeometryElement(
+                data: Data(bytes: mesh.indices, count: mesh.indices.count * MemoryLayout<Int32>.size),
+                primitiveType: .triangles,
+                primitiveCount: mesh.triangleCount,
+                bytesPerIndex: MemoryLayout<Int32>.size
+            )
+            let geometry = SCNGeometry(sources: [source, normalSource], elements: [element])
+
+            // Two hues that read as opposite phases, translucent so the atoms
+            // inside the envelope stay visible.  ``isDoubleSided`` matters
+            // because the viewer orbits the molecule and the far side of a lobe
+            // would otherwise vanish.
+            let colour: UIColor = phase == .positive
+                ? UIColor(red: 0.30, green: 0.55, blue: 0.95, alpha: 1)
+                : UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1)
+            let material = SCNMaterial()
+            material.diffuse.contents = colour
+            material.emission.contents = colour.withAlphaComponent(0.25)
+            material.transparency = 0.55
+            material.lightingModel = .physicallyBased
+            material.roughness.contents = 0.6
+            material.metalness.contents = 0.0
+            material.isDoubleSided = true
+            // Writing depth but not testing it against itself would make the
+            // two lobes fight where they meet; leaving the test on and the
+            // writes off lets them blend.
+            material.writesToDepthBuffer = false
+            material.blendMode = .alpha
+            geometry.materials = [material]
+
+            let node = SCNNode(geometry: geometry)
+            node.renderingOrder = 10
+            return node
+        }
+
+        /// Points the camera at the origin from its current direction.
+        ///
+        /// Only the distance changes, so an orbit the user has performed
+        /// survives a geometry refresh.  The orbital radius is folded in so an
+        /// envelope that reaches past the atoms is not cropped.
+        private func reframe(to distance: Double, orbitalRadius: Double = 0) {
+            let target = max(distance, MoleculeLayout.cameraDistance(forExtent: orbitalRadius))
+            guard target > 0, target.isFinite else { return }
+            let current = cameraNode.position
+            let length = (current.x * current.x + current.y * current.y
+                          + current.z * current.z).squareRoot()
+
+            if length < 0.0001 {
+                cameraNode.position = SCNVector3(0, 0, Float(target))
+            } else if abs(target - cameraDistance) > 0.001 {
+                let scale = Float(target / Double(length))
+                cameraNode.position = SCNVector3(
+                    current.x * scale, current.y * scale, current.z * scale)
+            }
+            cameraDistance = target
         }
 
         private func rebuild(layout: MoleculeLayout, elements: [Element]) {
@@ -146,26 +290,6 @@ struct MoleculeView: UIViewRepresentable {
                 content.addChildNode(node)
                 atomNodes[atom.index] = node
             }
-        }
-
-        /// Points the camera at the origin from its current direction.
-        ///
-        /// Only the distance changes, so an orbit the user has performed
-        /// survives a geometry refresh.
-        private func reframe(to distance: Double) {
-            guard distance > 0, distance.isFinite else { return }
-            let current = cameraNode.position
-            let length = (current.x * current.x + current.y * current.y
-                          + current.z * current.z).squareRoot()
-
-            if length < 0.0001 {
-                cameraNode.position = SCNVector3(0, 0, Float(distance))
-            } else if abs(distance - cameraDistance) > 0.001 {
-                let scale = Float(distance / Double(length))
-                cameraNode.position = SCNVector3(
-                    current.x * scale, current.y * scale, current.z * scale)
-            }
-            cameraDistance = distance
         }
 
         private static func signature(of geometry: GeometryDescription) -> String {

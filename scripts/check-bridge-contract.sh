@@ -96,10 +96,16 @@ fixtures = {
                                   "include": ["localization"]}),
     "scf_boys": call("scf", {"atoms": WATER, "basis": "6-31g", "method": "RHF",
                              "include": ["localization:boys"]}),
-    # The orbital viewer fetches one cube per selection rather than carrying a
-    # cube per orbital in the SCF payload.
-    "orbital_grid": call("orbital_grid", {"atoms": WATER, "basis": "sto-3g", "method": "RHF",
-                                          "index": 3}),
+    # The 3D viewer draws an isosurface rather than a slice.  Two fixtures: a
+    # canonical MO, whose two lobes are on opposite sides of the plane, and a
+    # localised orbital, which is the picture that reads as a bond or lone pair.
+    # The resolution is deliberately below the app's default to keep the fixture
+    # small; the geometry rules do not depend on it.
+    "orbital_surface": call("orbital_surface", {"atoms": WATER, "basis": "sto-3g", "method": "RHF",
+                                                "source": "mo", "index": 4, "pointsPerAxis": 24}),
+    "orbital_surface_lmo": call("orbital_surface", {"atoms": WATER, "basis": "sto-3g", "method": "RHF",
+                                                    "source": "pm-mulliken", "index": 0,
+                                                    "pointsPerAxis": 24}),
     "mp2": call("mp2", {"atoms": WATER, "basis": "sto-3g", "reference": "RHF", "include": []}),
     "ccsd": call("ccsd", {"atoms": WATER, "basis": "sto-3g", "reference": "RHF", "include": []}),
     "bond_scan": call("bond_scan", {"atoms": WATER, "i": 0, "j": 1, "method": "RHF",
@@ -133,7 +139,8 @@ echo ">> compiling the contract check"
 LD_LIBRARY_PATH="$SWIFTLIBS:${LD_LIBRARY_PATH:-}" \
   "$SWIFT" -o "$OUT/contract" \
   "$ROOT/ios/tests/BridgeContract/main.swift" \
-  "$ROOT/ios/PySCF/Models/PySCFModels.swift"
+  "$ROOT/ios/PySCF/Models/PySCFModels.swift" \
+  "$ROOT/ios/PySCF/Views/OrbitalMesh.swift"
 
 echo ">> running the contract check"
 FIXTURES="$OUT/fixtures.json" "$OUT/contract"

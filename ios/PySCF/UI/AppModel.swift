@@ -172,9 +172,17 @@ final class AppModel: ObservableObject {
     @Published var wantLocalization: Bool = false
     /// The orbital the viewer is drawing, or nil for none yet.
     @Published var viewedOrbital: Int?
-    /// The cube for ``viewedOrbital``, once fetched.
-    @Published var orbitalCube: OrbitalCube?
-    /// Set while the orbital cube is being fetched.
+    /// What ``viewedOrbital`` indexes: ``"mo"`` for a canonical molecular
+    /// orbital, or an intrinsic localisation method for a localised one.
+    @Published var orbitalSource: String = "mo"
+    /// The isosurface for ``viewedOrbital``, once fetched.
+    @Published var orbitalSurface: OrbitalSurface?
+    /// The amplitude the envelope is drawn at, as a fraction of the orbital's
+    /// peak.  The familiar pictures use something near a twentieth.
+    @Published var isovalueFraction: Double = 0.05
+    /// Whether the envelope is drawn, so the molecule can be inspected alone.
+    @Published var showsOrbital: Bool = true
+    /// Set while the orbital isosurface is being computed.
     @Published var isLoadingOrbital: Bool = false
     @Published var scanI: Int = 0
     @Published var scanJ: Int = 1
@@ -552,7 +560,7 @@ final class AppModel: ObservableObject {
             // A new run invalidates the orbital the viewer was drawing: the
             // cube belongs to the old wavefunction.
             viewedOrbital = nil
-            orbitalCube = nil
+            orbitalSurface = nil
             logText = output.log
             screen = .results
             recordHistory(kind: historyKind(for: calculation),
@@ -579,31 +587,51 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Fetches the cube for one orbital and shows it.
+    /// Fetches the isosurface of one orbital and shows it.
     ///
     /// Kept out of ``run`` because it is a second round trip: the orbital the
     /// user wants is not known until they pick one from the ladder, and
-    /// fetching every cube up front would be many times the cost of the run
-    /// that produced them.
-    func loadOrbital(_ index: Int) async {
+    /// computing a surface for every orbital up front would be many times the
+    /// cost of the run that produced them.
+    ///
+    /// ``source`` selects a canonical MO or a localised orbital.  Localisation
+    /// is re-run on the engine side for a localised pick, which is why switching
+    /// source reloads rather than reusing the MO it was derived from.
+    func loadOrbital(_ index: Int, source: String? = nil) async {
         guard result != nil else { return }
+        // The viewer draws the orbital on the molecule, so the geometry has to
+        // be present even if the builder never refreshed it.
+        if geometry == nil { await refreshGeometry() }
+        let chosen = source ?? orbitalSource
         isLoadingOrbital = true
         defer { isLoadingOrbital = false }
         do {
-            let cube = try await engine.orbitalGrid(
+            let surface = try await engine.orbitalSurface(
                 atoms: atomSpec,
                 index: index,
+                source: chosen,
                 method: calculation.usesFunctional
                     ? (spin > 0 ? "UKS" : "RKS") : (spin > 0 ? "ROHF" : "RHF"),
                 basis: basis,
                 xc: functional,
                 charge: charge,
-                spin: spin)
+                spin: spin,
+                isovalue: isovalueFraction)
+            orbitalSource = chosen
             viewedOrbital = index
-            orbitalCube = cube
+            orbitalSurface = surface
+            if !surface.hasGeometry {
+                log("\(surface.label): no envelope at this isovalue; raise it to shrink the surface")
+            }
         } catch {
             report(error)
         }
+    }
+
+    /// Redraws the current orbital at the current isovalue.
+    func redrawOrbital() async {
+        guard let index = viewedOrbital else { return }
+        await loadOrbital(index, source: orbitalSource)
     }
 
     /// Scans the potential-energy surface along the selected bond.

@@ -816,44 +816,109 @@ struct DensityGrid {
     }
 }
 
-/// One molecular orbital evaluated on a grid, for the orbital viewer.
+/// One phase of an orbital as a triangle mesh, in ångström.
 ///
-/// The cube is signed: an orbital has lobes of both phases, and the sign is
-/// what distinguishes them, so it is carried rather than folded away.  A
-/// renderer normalises by ``peak`` and colours the two signs differently.
-struct OrbitalCube {
+/// The vertices are already in the molecule's own frame, so a renderer adds
+/// them to the ball-and-stick scene without a transform. ``normals`` are the
+/// field's gradient, which makes the shading smooth across a lobe rather than
+/// faceted; they are the reason the winding order of ``indices`` can be
+/// ignored, since the lighting does not depend on it.
+struct OrbitalPhase {
+    var vertices: [SIMD3<Float>]
+    var normals: [SIMD3<Float>]
+    /// Triangle corners, three per triangle, indexing ``vertices``.
+    var indices: [Int32]
+
+    var triangleCount: Int { indices.count / 3 }
+    var isEmpty: Bool { indices.isEmpty }
+
+    init(_ json: JSONObject) {
+        vertices = OrbitalPhase.points(json.raw["vertices"])
+        normals = OrbitalPhase.points(json.raw["normals"])
+        indices = json.integers("indices").map(Int32.init)
+    }
+
+    /// A coordinate list as one vector per point.
+    ///
+    /// The engine emits one ``[x, y, z]`` array per point, which is what makes
+    /// the payload readable when a mesh is inspected by hand; a flat triple
+    /// list is accepted too so a future change on either side does not silently
+    /// decode to an empty mesh.  That failure mode is why this takes ``Any``:
+    /// a nested array read with the flat accessor yields no vertices at all,
+    /// while the triangle count stays right, and the mesh then renders as
+    /// nothing.
+    private static func points(_ raw: Any?) -> [SIMD3<Float>] {
+        guard let raw = raw as? [Any] else { return [] }
+
+        // One array per point.
+        if let rows = raw as? [[NSNumber]] {
+            return rows.compactMap { row in
+                guard row.count >= 3 else { return nil }
+                return SIMD3<Float>(
+                    row[0].floatValue, row[1].floatValue, row[2].floatValue)
+            }
+        }
+
+        // A single flat triple list.
+        let flat = raw.compactMap { ($0 as? NSNumber)?.doubleValue }
+        guard flat.count >= 3 else { return [] }
+        var result: [SIMD3<Float>] = []
+        result.reserveCapacity(flat.count / 3)
+        var index = 0
+        while index + 2 < flat.count {
+            result.append(SIMD3<Float>(
+                Float(flat[index]), Float(flat[index + 1]), Float(flat[index + 2])
+            ))
+            index += 3
+        }
+        return result
+    }
+}
+
+/// The isosurface of one orbital, both phases, for the 3D viewer.
+///
+/// This is the familiar orbital picture: the molecule with a translucent
+/// envelope around each lobe. The two phases are separate meshes because an
+/// orbital is signed and the two lobes are drawn in contrasting colours.
+///
+/// ``source`` records what was drawn, which is either a canonical molecular
+/// orbital (``"mo"``) or one of the intrinsic localisations, so the viewer can
+/// label the picture and reload the same thing when the isovalue changes.
+struct OrbitalSurface {
+    var source: String
     var index: Int
+    var label: String
     var orbitalEnergy: Double
     var occupation: Double
     var nBasis: Int
-    var grid: DensityGrid
+    var pointsPerAxis: Int
+    /// The absolute amplitude the envelope was drawn at, and the fraction of
+    /// the peak it came from.
+    var isovalue: Double
+    var isovalueFraction: Double
+    var peak: Double
+    var positive: OrbitalPhase
+    var negative: OrbitalPhase
 
     init(_ json: JSONObject) {
+        source = json.value("source") ?? "mo"
         index = json.integer("index") ?? 0
+        label = json.value("label") ?? "MO"
         orbitalEnergy = json.number("orbitalEnergy") ?? 0
         occupation = json.number("occupation") ?? 0
         nBasis = json.integer("nBasis") ?? 0
-        grid = DensityGrid(json.object("grid") ?? JSONObject([:]))
+        pointsPerAxis = json.integer("pointsPerAxis") ?? 0
+        isovalue = json.number("isovalue") ?? 0
+        isovalueFraction = json.number("isovalueFraction") ?? 0
+        peak = json.number("peak") ?? 0
+        positive = OrbitalPhase(json.object("positive") ?? JSONObject([:]))
+        negative = OrbitalPhase(json.object("negative") ?? JSONObject([:]))
     }
 
-    /// The largest magnitude in the cube, or 1 when it is empty.
-    ///
-    /// The magnitude, not the value: an orbital's most negative lobe is as
-    /// significant as its most positive one, and normalising by the signed
-    /// peak would blow the other phase out of range.
-    var peak: Double {
-        let magnitude = grid.values.reduce(0.0) { max($0, abs($1)) }
-        return magnitude > 0 ? magnitude : 1
-    }
-
-    /// A voxel as a signed fraction of the peak, in -1...1.
-    func amplitude(x: Int, y: Int, z: Int) -> Double? {
-        guard let value = grid.value(x: x, y: y, z: z) else { return nil }
-        return value / peak
-    }
-
-    /// Whether the orbital is occupied, i.e. whether it is one of the electrons.
+    var triangleCount: Int { positive.triangleCount + negative.triangleCount }
     var isOccupied: Bool { occupation > 0.5 }
+    /// Whether either lobe produced any geometry.
+    var hasGeometry: Bool { !positive.isEmpty || !negative.isEmpty }
 }
 
 /// The shared result shape returned by scf/dft/mp2/ccsd.

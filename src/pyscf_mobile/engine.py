@@ -22,7 +22,7 @@ import time
 import traceback
 from typing import Any, Iterable
 
-from . import geometry, localized_orbitals, natural_orbitals, orbital_localization
+from . import geometry, localized_orbitals, natural_orbitals, orbital_localization, orbital_surface
 from .diaglog import crash_probe, get_logger
 
 # --------------------------------------------------------------------------
@@ -549,6 +549,47 @@ def _dipole(mf) -> dict | None:
     }
 
 
+def _orbital_values(mf, atoms: list[dict], column: np.ndarray,
+                    points_per_axis: int, padding: float) -> tuple[np.ndarray, list[float], list[float]]:
+    """Evaluate one orbital's AO coefficients on a cubic grid.
+
+    Shared by the cube and the surface so both sample the same box at the same
+    spacing; a surface drawn against a differently-placed grid would not sit on
+    the molecule it belongs to.
+    """
+    coords = geometry.atoms_to_coords(atoms)
+    lo = coords.min(axis=0) - padding
+    hi = coords.max(axis=0) + padding
+    axes = [np.linspace(lo[i], hi[i], points_per_axis) for i in range(3)]
+    gx, gy, gz = np.meshgrid(*axes, indexing="ij")
+    flat = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
+    ao = mf.mol.eval_gto("GTOval", flat)
+    values = np.asarray(ao @ column, dtype=float).reshape(points_per_axis, points_per_axis, points_per_axis)
+    origin = [float(lo[i]) for i in range(3)]
+    step = [float((hi[i] - lo[i]) / (points_per_axis - 1)) for i in range(3)]
+    return values, origin, step
+
+
+def _localized_column(mf, atoms: list[dict], kind: str, index: int) -> np.ndarray:
+    """The AO coefficients of one localised occupied orbital.
+
+    The intrinsic methods return their orbitals as a block of occupied columns,
+    so ``index`` picks one of them.  This is what gives the viewer the familiar
+    picture for a localised orbital: the isosurface is built from the same
+    coefficients the localisation optimised.
+
+    The localisation itself is re-run here rather than carried in from the SCF
+    payload.  It is a few sweeps over the occupied pairs, which is cheap next to
+    the SCF that preceded it, and keeping the coefficients out of the payload
+    keeps a normal run small.
+    """
+    block, _sweeps, _objective = orbital_localization.localize_coefficients(mf, method=kind)
+    coefficients = np.asarray(block, dtype=float)
+    if not 0 <= index < coefficients.shape[1]:
+        raise ValueError(f"localised orbital index {index} outside 0..{coefficients.shape[1] - 1}")
+    return coefficients[:, index]
+
+
 def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: float = 1.6) -> dict:
     """Evaluate the total electron density on a coarse cubic grid.
 
@@ -573,44 +614,6 @@ def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: flo
         "origin": [round(float(lo[i]), 6) for i in range(3)],
         "step": [round(float((hi[i] - lo[i]) / (points_per_axis - 1)), 6) for i in range(3)],
         "values": [round(float(v), 8) for v in np.asarray(rho).ravel()],
-    }
-
-
-def _orbital_grid(mf, atoms: list[dict], index: int,
-                  points_per_axis: int = 22, padding: float = 1.6) -> dict:
-    """Evaluate one molecular orbital on a coarse cubic grid.
-
-    Same shape as ``_density_grid`` so the Swift side reuses ``DensityGrid`` and
-    its slice renderer.  The values are signed -- an orbital has lobes of both
-    phases -- and the caller normalises by the peak magnitude, which is why the
-    sign is carried rather than squared away.
-
-    ``index`` is the orbital's position in ``mo_coeff``, the same numbering the
-    energy ladder shows.
-    """
-    coefficients = np.asarray(mf.mo_coeff, dtype=float)
-    if not 0 <= index < coefficients.shape[1]:
-        raise ValueError(f"orbital index {index} outside 0..{coefficients.shape[1] - 1}")
-    coords = geometry.atoms_to_coords(atoms)
-    lo = coords.min(axis=0) - padding
-    hi = coords.max(axis=0) + padding
-    axes = [np.linspace(lo[i], hi[i], points_per_axis) for i in range(3)]
-    gx, gy, gz = np.meshgrid(*axes, indexing="ij")
-    flat = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
-    # A closed-shell reference stores both spins in one block; an unrestricted
-    # one stores them separately, and the orbital the user picked lives in the
-    # alpha block, which is column 0 of the pair.
-    column = coefficients[:, index]
-    if column.ndim > 1:
-        column = column[:, 0]
-    ao = mf.mol.eval_gto("GTOval", flat)
-    values = ao @ column
-    return {
-        "index": int(index),
-        "shape": [points_per_axis] * 3,
-        "origin": [round(float(lo[i]), 6) for i in range(3)],
-        "step": [round(float((hi[i] - lo[i]) / (points_per_axis - 1)), 6) for i in range(3)],
-        "values": [round(float(v), 8) for v in np.asarray(values).ravel()],
     }
 
 
@@ -1195,32 +1198,126 @@ def run_intrinsic_localization(params: dict) -> dict:
     }
 
 
-def run_orbital_grid(params: dict) -> dict:
-    """Evaluate one molecular orbital on a grid, for the orbital viewer.
+def _orbital_column(mf, index: int) -> np.ndarray:
+    """The AO coefficients of one canonical orbital, as a 1-D column.
 
-    ``index`` selects the orbital in the same numbering the energy ladder uses,
-    counting from zero over ``mo_coeff``.  The result carries the orbital's
-    energy and occupation alongside the cube, so the viewer can label what it
-    is drawing without a second round trip.
+    A closed-shell reference stores one ``(nao, nmo)`` block.  An unrestricted
+    one stores the alpha and beta blocks stacked, as ``(2, nao, nmo)`` or a
+    tuple of two ``(nao, nmo)`` arrays, and the energy ladder the app shows is
+    those blocks concatenated in that order, so an index past the first block
+    selects from the second.  Treating the stacked array as a single block would
+    pick the wrong orbital and then fail on the shape, so the two cases are
+    separated here rather than left to the caller.
+    """
+    coefficients = mf.mo_coeff
+    blocks = None
+    if isinstance(coefficients, (tuple, list)):
+        blocks = [np.asarray(block, dtype=float) for block in coefficients]
+    else:
+        stacked = np.asarray(coefficients, dtype=float)
+        if stacked.ndim == 3:
+            blocks = [stacked[spin] for spin in range(stacked.shape[0])]
+
+    if blocks is not None:
+        per_block = blocks[0].shape[1]
+        if not 0 <= index < per_block * len(blocks):
+            raise ValueError(
+                f"orbital index {index} outside 0..{per_block * len(blocks) - 1}")
+        spin, column = divmod(index, per_block)
+        return blocks[spin][:, column]
+
+    stacked = np.asarray(coefficients, dtype=float)
+    if not 0 <= index < stacked.shape[1]:
+        raise ValueError(f"orbital index {index} outside 0..{stacked.shape[1] - 1}")
+    column = stacked[:, index]
+    if column.ndim > 1:
+        column = column[:, 0]
+    return column
+
+
+def run_orbital_surface(params: dict) -> dict:
+    """The isosurface of one orbital, for the 3D viewer.
+
+    Returns a triangle mesh in absolute ångström, in the same frame as the
+    molecule the app is already drawing, so the Swift side can add it to the
+    existing ball-and-stick scene and have it land in the right place.
+
+    ``source`` picks what to draw.  ``"mo"`` is a canonical molecular orbital,
+    indexed the way the energy ladder numbers them.  Any of the intrinsic
+    localisation methods (``"pm-mulliken"``, ``"pm-lowdin"``, ``"boys"``,
+    ``"er"``) draws a localised occupied orbital instead, which is the picture
+    that reads as a bond or a lone pair rather than as a delocalised MO.
+
+    ``isovalue`` is the amplitude the envelope is drawn at, as a fraction of the
+    orbital's own peak.  Both lobes are returned, as separate meshes: an orbital
+    is signed, and the two phases are what the picture has to show.
     """
     start = time.perf_counter()
     mf, atoms, basis, method, _log = _run_mean_field(params)
     index = int(params.get("index", 0))
-    points = int(params.get("pointsPerAxis", 22))
-    grid = _orbital_grid(mf, atoms, index, points_per_axis=points)
+    source = str(params.get("source", "mo")).lower()
+    points = int(params.get("pointsPerAxis", 40))
+    # A fraction of the peak rather than an absolute amplitude: orbitals differ
+    # in scale by orders of magnitude between basis sets, and a fixed absolute
+    # isovalue would give an empty picture for one and a ball for another.
+    fraction = float(params.get("isovalue", 0.05))
+    if not 0.0 < fraction < 1.0:
+        raise ValueError(f"isovalue must be a fraction in (0, 1), not {fraction}")
+
+    if source == "mo":
+        column = _orbital_column(mf, index)
+        label = f"MO {index + 1}"
+        energies = np.asarray(mf.mo_energy, dtype=float).ravel()
+        occupations = np.asarray(mf.mo_occ, dtype=float).ravel()
+        orbital_energy = float(energies[index])
+        occupation = float(occupations[index])
+    elif source in orbital_localization.METHODS:
+        column = _localized_column(mf, atoms, source, index)
+        label = f"LMO {index + 1}"
+        # A localised occupied orbital carries one electron pair, so its energy
+        # is not a single MO eigenvalue; the diagonal Fock element is the
+        # meaningful one and is what the panel shows.
+        fock = np.asarray(mf.get_fock(), dtype=float)
+        orbital_energy = float(column @ fock @ column)
+        occupation = 2.0
+    else:
+        raise ValueError(f"unknown orbital source: {source!r}")
+
+    values, origin, step = _orbital_values(mf, atoms, column, points, 1.6)
+    peak = float(np.abs(values).max())
+    if peak <= 0:
+        raise ValueError("the selected orbital is zero everywhere on the grid")
+    level = fraction * peak
+
+    # The two phases.  Each is the isosurface of a field whose enclosed region
+    # is the lobe in question, so they are extracted independently and coloured
+    # differently by the viewer.
+    positive = orbital_surface.isosurface(
+        values, values.shape, np.asarray(origin), np.asarray(step), level
+    )
+    negative = orbital_surface.isosurface(
+        -values, values.shape, np.asarray(origin), np.asarray(step), level
+    )
+
     wall_ms = (time.perf_counter() - start) * 1000.0
-    energies = np.asarray(mf.mo_energy, dtype=float).ravel()
-    occupations = np.asarray(mf.mo_occ, dtype=float).ravel()
     return {
         "ok": True,
         "method": f"{method}/{basis}",
         "energy": round(float(mf.e_tot), 10),
         "wallTimeMs": round(wall_ms, 3),
+        "source": source,
         "index": index,
-        "orbitalEnergy": round(float(energies[index]), 8),
-        "occupation": round(float(occupations[index]), 6),
+        "label": label,
+        "orbitalEnergy": round(orbital_energy, 8),
+        "occupation": round(occupation, 6),
         "nBasis": int(mf.mol.nao_nr()),
-        "grid": grid,
+        "pointsPerAxis": points,
+        "isovalue": round(level, 8),
+        "isovalueFraction": fraction,
+        "peak": round(peak, 8),
+        "positive": positive,
+        "negative": negative,
+        "triangles": (len(positive["indices"]) + len(negative["indices"])) // 3,
     }
 
 
@@ -1297,7 +1394,7 @@ def dispatch(method: str, params: dict) -> dict:
         "boys": lambda params: run_intrinsic_localization({**params, "kind": "boys"}),
         "er": lambda params: run_intrinsic_localization({**params, "kind": "er"}),
         "optimise": run_geometry_optimisation,
-        "orbital_grid": run_orbital_grid,
+        "orbital_surface": run_orbital_surface,
     }
     if method not in handlers:
         raise ValueError(f"unknown method: {method!r}")

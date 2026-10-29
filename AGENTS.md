@@ -343,6 +343,41 @@ linker aliases. Do not reintroduce a hardcoded `/tmp/swift-toolchain` or
 `/tmp/swift-libs` path: `/tmp` does not survive a container restart, and a missing
 compiler then looks like a test failure rather than a setup gap.
 
+### The orbital viewer draws an isosurface, not a slice
+
+The viewer shows the familiar picture: the whole molecule in 3D with a
+translucent envelope around each lobe of the chosen orbital. It is *not* a 2D
+density or amplitude slice, and the old slice path (`orbital_grid` RPC,
+`OrbitalCube`, `OrbitalSliceView`) has been removed. Do not reintroduce it as a
+fallback; the isosurface is the feature.
+
+* `src/pyscf_mobile/orbital_surface.py` — marching tetrahedra, welding vertices
+  and averaging normals so a lobe shades smoothly. It accepts **both** triangle
+  windings (the edge order flips with the sign of the field), which is why the
+  edge lookup is a sorted pair rather than an ordered one. Verified against an
+  analytic sphere: max radius error 0.0021 at grid step 0.085, unit normals.
+* `run_orbital_surface` in `engine.py` — returns both phases as separate meshes
+  in **absolute ångström**, the same frame as `geometry`, so the Swift side adds
+  them to the existing SceneKit scene with no transform. `source` is `"mo"` or an
+  intrinsic localisation method; `isovalue` is a **fraction of the orbital's own
+  peak** (default 0.05), not an absolute amplitude, because orbitals differ in
+  scale by orders of magnitude between basis sets.
+* `_orbital_column` handles the unrestricted case. PySCF's UHF/UKS stores
+  `mo_coeff` as a `(2, nao, nmo)` stack (not a tuple), while the ladder the app
+  shows concatenates alpha then beta, so the index must be mapped into the
+  blocks. Reading it as one block raises on the shape.
+* `MoleculeView` takes `surface`/`showsOrbital` and keeps the orbital in its own
+  `SCNNode` so hiding it does not disturb the molecule or the camera. The two
+  lobes are translucent and `writesToDepthBuffer = false`, or the two phases
+  fight where they meet.
+
+Two failure modes are silent on a device and are covered by tests instead of by
+looking at the screen: a mesh decoded from nested `[[x,y,z],…]` JSON with the
+flat accessor yields **no vertices** while the triangle count stays right (see
+`OrbitalPhase.points`), and a surface centred in the wrong frame still renders —
+just offset from the molecule (`OrbitalMesh` centres on the same vector as
+`MoleculeLayout`).
+
 ## Testing notes
 
 `test_shims.py` rewrites `sys.path` to put the vendored shims ahead of the real

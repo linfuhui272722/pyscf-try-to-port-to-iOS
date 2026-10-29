@@ -214,31 +214,103 @@ do {
     expect(boys.localization?.family == "Foster-Boys", "Boys family named")
 }
 
-print("orbital grid")
+print("orbital surface")
 do {
-    let cube = OrbitalCube(fixture("orbital_grid"))
-    expect(cube.index == 3, "the requested orbital index is echoed (\(cube.index))")
-    expect(cube.nBasis == 7, "basis size reported (\(cube.nBasis))")
-    expect(cube.occupation > 0.5, "orbital 4 of water is occupied (\(cube.occupation))")
-    expect(cube.isOccupied, "isOccupied agrees with the occupation")
-    expect(cube.orbitalEnergy < 0, "an occupied orbital has negative energy (\(cube.orbitalEnergy))")
-    expect(cube.grid.shape == [22, 22, 22], "cube is 22^3 (\(cube.grid.shape))")
-    expect(cube.grid.values.count == 22 * 22 * 22, "cube values match shape")
+    let surface = OrbitalSurface(fixture("orbital_surface"))
+    expect(surface.source == "mo", "the source is echoed (\(surface.source))")
+    expect(surface.index == 4, "the requested index is echoed (\(surface.index))")
+    expect(surface.label == "MO 5", "the label names the orbital (\(surface.label))")
+    expect(surface.pointsPerAxis == 24, "the resolution is echoed (\(surface.pointsPerAxis))")
+    expect(surface.isovalueFraction > 0 && surface.isovalueFraction < 1,
+           "the isovalue fraction is a fraction (\(surface.isovalueFraction))")
+    expect(abs(surface.isovalue - surface.isovalueFraction * surface.peak) < 1e-6,
+           "the absolute isovalue is the fraction of the peak")
 
-    // The cube is signed: an orbital has both phases.  A payload that had
-    // squared or taken the absolute value would pass every other check here
-    // but render as a single colour, so the sign is asserted directly.
-    expect(cube.grid.values.contains { $0 > 0.01 }, "the cube has a positive lobe")
-    expect(cube.grid.values.contains { $0 < -0.01 }, "the cube has a negative lobe")
-    expect(cube.peak > 0, "peak magnitude is positive (\(cube.peak))")
+    // The picture has to be two lobes.  A single-lobe payload would still
+    // render, and would still look like an orbital, so the second lobe is
+    // asserted rather than inferred from the triangle count.
+    expect(surface.hasGeometry, "the surface has geometry")
+    expect(!surface.positive.isEmpty, "the positive lobe is present")
+    expect(!surface.negative.isEmpty, "the negative lobe is present")
+    expect(surface.triangleCount > 100, "the surface has a useful triangle count (\(surface.triangleCount))")
 
-    // The amplitude is the cube normalised by the peak magnitude, so it stays
-    // in -1...1 and reaches both ends.
-    let amplitudes = cube.grid.values.map { $0 / cube.peak }
-    expect(amplitudes.allSatisfy { $0 >= -1.0001 && $0 <= 1.0001 }, "amplitudes stay within -1...1")
-    expect(abs(amplitudes.map(abs).max()! - 1) < 1e-9, "the peak magnitude reaches 1")
-    expect(cube.amplitude(x: 0, y: 0, z: 0) != nil, "a voxel is readable")
-    expect(cube.amplitude(x: -1, y: 0, z: 0) == nil, "an out-of-range voxel is nil")
+    // Every index has to address a vertex, and the triangles have to be whole.
+    for (name, phase) in [("positive", surface.positive), ("negative", surface.negative)] {
+        expect(phase.indices.count % 3 == 0, "\(name) triangles are whole")
+        expect(phase.indices.allSatisfy { $0 >= 0 && Int($0) < phase.vertices.count },
+               "\(name) indices are in range")
+        expect(phase.normals.count == phase.vertices.count,
+               "\(name) has one normal per vertex")
+        // Normals drive the shading, so they have to be unit vectors.
+        let lengths = phase.normals.map { sqrt($0.x * $0.x + $0.y * $0.y + $0.z * $0.z) }
+        expect(lengths.allSatisfy { abs($0 - 1) < 0.01 },
+               "\(name) normals are unit length")
+    }
+
+    // The two lobes of this orbital sit on opposite sides of the molecular
+    // plane, so their centroids must differ; identical centroids would mean the
+    // phases had been extracted from the same field.
+    func centroid(_ phase: OrbitalPhase) -> SIMD3<Float> {
+        guard !phase.vertices.isEmpty else { return SIMD3<Float>(0, 0, 0) }
+        var total = SIMD3<Float>(0, 0, 0)
+        for vertex in phase.vertices { total += vertex }
+        return total / Float(phase.vertices.count)
+    }
+    func distance(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> Float {
+        let d = a - b
+        return sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
+    }
+    let separation = distance(centroid(surface.positive), centroid(surface.negative))
+    expect(separation > 0.2, "the two lobes are spatially separated (\(separation))")
+
+    // The mesh builder centres on the molecule and must keep every vertex
+    // usable; a shift applied twice or not at all still renders, just offset.
+    if let mesh = OrbitalMesh(phase: surface.positive, centredOn: [0, 0, 0]) {
+        expect(mesh.vertexCount == surface.positive.vertices.count, "the mesh keeps every vertex")
+        expect(mesh.triangleCount == surface.positive.triangleCount, "the mesh keeps every triangle")
+        expect(mesh.vertexData.count == mesh.vertexCount * 6, "six floats per vertex")
+        expect(mesh.boundingRadius > 0, "the bounding radius is positive (\(mesh.boundingRadius))")
+    } else {
+        expect(false, "the mesh builder accepts the fixture")
+    }
+
+    // Centring is a pure translation: every vertex moves by exactly the centre,
+    // and the bounding radius is the furthest vertex from the origin in the
+    // shifted frame, so it is recomputed here rather than assumed invariant.
+    let shifted = OrbitalMeshPair(surface: surface, centreOfMass: [1, 2, 3])
+    let unshifted = OrbitalMeshPair(surface: surface, centreOfMass: [0, 0, 0])
+    expect(shifted.isEmpty == false, "the pair has geometry")
+    if let a = shifted.positive, let b = unshifted.positive {
+        expect(a.vertexData[0] == b.vertexData[0] - 1, "centring shifts x by the centre")
+        expect(a.vertexData[1] == b.vertexData[1] - 2, "centring shifts y by the centre")
+        expect(a.vertexData[2] == b.vertexData[2] - 3, "centring shifts z by the centre")
+
+        // The radius has to be measured in the same frame as the stored
+        // vertices; a radius kept in the unshifted frame would under-frame a
+        // molecule whose centre of mass is not the origin.
+        var furthest = 0.0
+        var index = 0
+        while index < a.vertexData.count {
+            let x = Double(a.vertexData[index])
+            let y = Double(a.vertexData[index + 1])
+            let z = Double(a.vertexData[index + 2])
+            furthest = max(furthest, (x * x + y * y + z * z).squareRoot())
+            index += 6
+        }
+        expect(abs(a.boundingRadius - furthest) < 1e-6,
+               "the bounding radius is the furthest shifted vertex (\(a.boundingRadius) vs \(furthest))")
+    }
+
+    // A localised orbital is single-signed: it is a bond or a lone pair, so its
+    // second lobe may legitimately be empty while the first is not.
+    let localised = OrbitalSurface(fixture("orbital_surface_lmo"))
+    expect(localised.source == "pm-mulliken", "the localisation method is echoed (\(localised.source))")
+    expect(localised.label == "LMO 1", "the label marks a localised orbital (\(localised.label))")
+    expect(abs(localised.occupation - 2.0) < 1e-6,
+           "a localised occupied orbital holds a pair (\(localised.occupation))")
+    expect(localised.hasGeometry, "the localised orbital has geometry")
+    expect(localised.positive.isEmpty != localised.negative.isEmpty,
+           "exactly one lobe carries the localised orbital")
 }
 
 print("ccsd")

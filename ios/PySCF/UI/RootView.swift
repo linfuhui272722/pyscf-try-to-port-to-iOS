@@ -234,15 +234,17 @@ struct OrbitalsScreen: View {
         .navigationTitle(L("screen.orbitals"))
     }
 
-    /// The orbital viewer: pick an orbital from the ladder, see its shape.
+    /// The orbital viewer: the molecule in 3D with the orbital drawn into it.
     ///
-    /// The cube is fetched on selection rather than with the run, so the
+    /// The picture is the familiar one: the whole molecule, with a translucent
+    /// envelope around each lobe of the chosen orbital at its real position.
+    /// The orbital is fetched on selection rather than with the run, so the
     /// selector is a list of buttons rather than a picker bound to the model:
     /// choosing one has to start a request, and a picker would appear to have
-    /// already switched to a cube that has not arrived.
+    /// already switched to a surface that has not arrived.
     @ViewBuilder
     private func orbitalViewerPanel(_ result: ScfResult) -> some View {
-        Panel(title: L("orbitals.viewer"), systemImage: "cube") {
+        Panel(title: L("orbitals.viewer"), systemImage: "cube.transparent") {
             if result.orbitalEnergies.isEmpty {
                 Text(L("orbitals.viewer.unavailable"))
                     .font(.callout)
@@ -252,41 +254,12 @@ struct OrbitalsScreen: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Array(result.orbitalEnergies.enumerated()), id: \.offset) { index, energy in
-                            let occupation = index < result.occupations.count ? result.occupations[index] : 0
-                            Button {
-                                Task { await model.loadOrbital(index) }
-                            } label: {
-                                VStack(spacing: 2) {
-                                    Text("\(index + 1)").font(.caption.monospacedDigit().bold())
-                                    Text(String(format: "%.3f", energy))
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    model.viewedOrbital == index
-                                        ? Color.accentColor.opacity(0.25)
-                                        : Color(.secondarySystemBackground),
-                                    in: RoundedRectangle(cornerRadius: 8)
-                                )
-                                .overlay(alignment: .topTrailing) {
-                                    // A dot marks the occupied orbitals, so the
-                                    // virtual ones are not mistaken for electrons.
-                                    if occupation > 0.5 {
-                                        Circle().fill(Color.accentColor)
-                                            .frame(width: 5, height: 5)
-                                            .padding(3)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.vertical, 2)
+                sourcePicker(result)
+
+                if model.orbitalSource == "mo" {
+                    orbitalSelector(result)
+                } else {
+                    localisedSelector(result)
                 }
 
                 if model.isLoadingOrbital {
@@ -296,23 +269,183 @@ struct OrbitalsScreen: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                } else if let cube = model.orbitalCube {
-                    OrbitalSliceView(cube: cube, zIndex: cube.grid.shape.count == 3 ? cube.grid.shape[2] / 2 : 0)
+                }
+
+                // The molecule and the orbital share one scene, so the envelope
+                // is drawn at its correct place in the molecule rather than in
+                // a frame of its own.
+                MoleculeView(
+                    geometry: model.geometry,
+                    elementTable: model.elements,
+                    surface: model.orbitalSurface,
+                    showsOrbital: model.showsOrbital)
+                    .frame(minHeight: 320)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                isovalueControls()
+
+                if let surface = model.orbitalSurface {
                     MetricRow(
                         label: L("orbitals.viewer.orbital"),
-                        value: LF("orbitals.viewer.selection",
-                                  cube.index + 1,
-                                  String(format: "%.5f", cube.orbitalEnergy),
-                                  String(format: "%.2f", cube.occupation))
-                    )
+                        value: "\(surface.label) · "
+                            + String(format: "%.5f", surface.orbitalEnergy)
+                            + " Ha · " + String(format: "%.2f", surface.occupation) + " e")
                     MetricRow(
-                        label: L("orbitals.viewer.phase"),
-                        value: L("orbitals.viewer.phase.legend")
+                        label: L("orbitals.viewer.surface"),
+                        value: LF("orbitals.viewer.surfaceDetail",
+                                  surface.triangleCount,
+                                  String(format: "%.4f", surface.isovalue))
                     )
                     Text(L("orbitals.viewer.note"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    /// Chooses between the canonical MOs and the localised orbitals.
+    ///
+    /// A localised orbital is the one that reads as a bond or a lone pair; the
+    /// canonical MOs are the delocalised ones the ladder shows.  Both are drawn
+    /// the same way, so this only changes which coefficients the envelope comes
+    /// from.
+    @ViewBuilder
+    private func sourcePicker(_ result: ScfResult) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L("orbitals.viewer.source"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker(L("orbitals.viewer.source"), selection: Binding(
+                get: { model.orbitalSource },
+                set: { choice in
+                    // Switching source changes what the index means, so the old
+                    // selection is cleared rather than carried over.
+                    model.viewedOrbital = nil
+                    model.orbitalSurface = nil
+                    model.orbitalSource = choice
+                }
+            )) {
+                Text(L("orbitals.viewer.source.mo")).tag("mo")
+                Text(L("orbitals.viewer.source.pm")).tag("pm-mulliken")
+                Text(L("orbitals.viewer.source.boys")).tag("boys")
+                Text(L("orbitals.viewer.source.er")).tag("er")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+    }
+
+    /// The canonical molecular orbitals, in the ladder's own numbering.
+    @ViewBuilder
+    private func orbitalSelector(_ result: ScfResult) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(result.orbitalEnergies.enumerated()), id: \.offset) { index, energy in
+                    let occupation = index < result.occupations.count ? result.occupations[index] : 0
+                    Button {
+                        Task { await model.loadOrbital(index, source: "mo") }
+                    } label: {
+                        VStack(spacing: 2) {
+                            Text("\(index + 1)").font(.caption.monospacedDigit().bold())
+                            Text(String(format: "%.3f", energy))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            model.viewedOrbital == index && model.orbitalSource == "mo"
+                                ? Color.accentColor.opacity(0.25)
+                                : Color(.secondarySystemBackground),
+                            in: RoundedRectangle(cornerRadius: 8)
+                        )
+                        .overlay(alignment: .topTrailing) {
+                            // A dot marks the occupied orbitals, so the
+                            // virtual ones are not mistaken for electrons.
+                            if occupation > 0.5 {
+                                Circle().fill(Color.accentColor)
+                                    .frame(width: 5, height: 5)
+                                    .padding(3)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    /// The localised occupied orbitals, one button each.
+    ///
+    /// There are half as many as there are electrons, and the localisation is
+    /// what turns them into bonds and lone pairs, so the count comes from the
+    /// occupied space rather than from the ladder.
+    @ViewBuilder
+    private func localisedSelector(_ result: ScfResult) -> some View {
+        let count = max(result.nElectrons / 2, 0)
+        if count == 0 {
+            Text(L("orbitals.viewer.localisation.unavailable"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(0..<count, id: \.self) { index in
+                        Button {
+                            Task { await model.loadOrbital(index, source: model.orbitalSource) }
+                        } label: {
+                            Text("\(index + 1)")
+                                .font(.caption.monospacedDigit().bold())
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    model.viewedOrbital == index
+                                        ? Color.accentColor.opacity(0.25)
+                                        : Color(.secondarySystemBackground),
+                                    in: RoundedRectangle(cornerRadius: 8)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    /// The isovalue slider, which is what sets how much of the orbital is
+    /// enclosed.
+    ///
+    /// The value is a fraction of the orbital's own peak rather than an absolute
+    /// amplitude, so the same setting gives a comparable envelope whatever the
+    /// basis set and however the orbital is scaled.  A larger fraction encloses
+    /// less of the orbital and gives a tighter envelope.
+    @ViewBuilder
+    private func isovalueControls() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(L("orbitals.viewer.isovalue"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "%.3f", model.isovalueFraction))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 12) {
+                Slider(value: $model.isovalueFraction, in: 0.01...0.2, step: 0.005) {
+                    Text(L("orbitals.viewer.isovalue"))
+                }
+                .onChange(of: model.isovalueFraction) { _ in
+                    Task { await model.redrawOrbital() }
+                }
+
+                Toggle(L("orbitals.viewer.show"), isOn: $model.showsOrbital)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
             }
         }
     }

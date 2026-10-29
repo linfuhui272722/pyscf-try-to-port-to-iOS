@@ -354,37 +354,3 @@ def test_localization_is_opt_in_for_scf():
     payload = engine.run_scf({**base, "include": ["localization:er"]})
     assert payload["localization"]["localization"] == "er"
     assert payload["localization"]["family"] == "Edmiston-Ruedenberg"
-
-
-def test_orbital_grid_rpc():
-    """The orbital viewer's cube carries a signed orbital, not a density."""
-    import numpy as np
-
-    from pyscf_mobile import engine
-
-    payload = engine.dispatch("orbital_grid", {
-        "atoms": WATER, "basis": "sto-3g", "method": "RHF", "index": 3,
-    })
-    assert payload["ok"] is True
-    assert payload["index"] == 3
-    assert payload["nBasis"] == 7
-    assert payload["occupation"] > 0.5
-
-    grid = payload["grid"]
-    assert grid["shape"] == [22, 22, 22]
-    values = np.asarray(grid["values"])
-    assert values.size == 22 ** 3
-    # Both phases must be present: this is what makes it an orbital rather than
-    # a density, which is everywhere non-negative.
-    assert values.max() > 0.01
-    assert values.min() < -0.01
-
-    # The index is validated rather than silently clamped.
-    try:
-        engine.dispatch("orbital_grid", {
-            "atoms": WATER, "basis": "sto-3g", "method": "RHF", "index": 99,
-        })
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("an out-of-range orbital index was accepted")

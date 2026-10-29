@@ -174,24 +174,27 @@ struct PySCFEngine {
         }
     }
 
-    /// Evaluates one molecular orbital on a grid, for the orbital viewer.
+    /// Evaluates the isosurface of one orbital, for the 3D viewer.
     ///
-    /// ``index`` counts from zero over ``mo_coeff``, matching the energy
-    /// ladder.  This is a separate call rather than part of ``scf`` because a
-    /// cube per orbital would bloat every payload, and the viewer only ever
-    /// draws the one orbital the user picked.
-    func orbitalGrid(
+    /// ``source`` is ``"mo"`` for a canonical molecular orbital or one of the
+    /// intrinsic localisation methods for a localised one; ``index`` counts
+    /// from zero within that set.  ``isovalue`` is a fraction of the orbital's
+    /// peak amplitude, so the same number gives a comparable envelope whatever
+    /// the basis and the orbital's scale.
+    func orbitalSurface(
         atoms: String,
         index: Int,
+        source: String = "mo",
         method: String = "RHF",
         basis: String = "sto-3g",
         xc: String = "b3lyp",
         charge: Int = 0,
         spin: Int = 0,
-        pointsPerAxis: Int = 22
-    ) async throws -> OrbitalCube {
+        isovalue: Double = 0.05,
+        pointsPerAxis: Int = 40
+    ) async throws -> OrbitalSurface {
         try await run {
-            OrbitalCube(try call("orbital_grid", [
+            OrbitalSurface(try call("orbital_surface", [
                 "atoms": atoms,
                 "method": method,
                 "basis": basis,
@@ -199,6 +202,8 @@ struct PySCFEngine {
                 "charge": charge,
                 "spin": spin,
                 "index": index,
+                "source": source,
+                "isovalue": isovalue,
                 "pointsPerAxis": pointsPerAxis,
             ]))
         }
