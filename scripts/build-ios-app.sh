@@ -162,6 +162,23 @@ echo "   overlaying current sources from src/pyscf_mobile"
 rm -rf "$ENGINE_DIR/pyscf_mobile/__pycache__"
 cp -R "$ROOT/src/pyscf_mobile/." "$ENGINE_DIR/pyscf_mobile/"
 
+# A module deleted from src/ is still in the tarball, and copying over the top
+# never removes it, so a removed module would keep shipping. Drop any .py the
+# tarball supplied that src/ no longer has. Compiled modules are left alone:
+# they are not in src/ at all.
+python3 - "$ROOT/src/pyscf_mobile" "$ENGINE_DIR/pyscf_mobile" <<'PRUNE'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+for root, _dirs, files in os.walk(dst):
+    for name in files:
+        if not name.endswith(".py"):
+            continue
+        rel = os.path.relpath(os.path.join(root, name), dst)
+        if not os.path.exists(os.path.join(src, rel)):
+            os.remove(os.path.join(root, name))
+            print(f"   pruned stale module {rel}")
+PRUNE
+
 if [ -n "$NUMPY_WHEEL" ]; then
   echo ">> staging NumPy from $(basename "$NUMPY_WHEEL")"
   python3 -c "
