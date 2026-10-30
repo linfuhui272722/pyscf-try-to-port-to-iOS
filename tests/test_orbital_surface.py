@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import numpy as np  # noqa: E402
 from pyscf import gto, scf  # noqa: E402
 
-from pyscf_mobile import engine, orbital_surface  # noqa: E402
+from pyscf_mobile import engine, geometry, orbital_surface  # noqa: E402
 
 WATER = "O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587"
 BENZENE = (
@@ -227,9 +227,15 @@ def test_orbital_surface_rpc_honours_the_isovalue():
         if len(vertices) == 0:
             return 0.0
         triangles = vertices[indices.reshape(-1, 3)]
-        # Signed tetrahedron volumes about the origin: the magnitude of the sum
-        # is the enclosed volume, which is what "encloses less" refers to.
-        a, b, c = triangles[:, 0], triangles[:, 1], triangles[:, 2]
+        # Signed tetrahedron volumes about the lobe's own centre.  Taking them
+        # about the coordinate origin instead measures how far the lobe sits
+        # from the origin, not how much it encloses: this orbital's positive
+        # lobe is centred half an ångström off the oxygen, so an origin-based
+        # sum ranks the tight contour above the loose one.  For a closed
+        # surface the enclosed volume is independent of the reference point,
+        # so any interior point works and the vertex mean is one.
+        shift = vertices.mean(axis=0)
+        a, b, c = (triangles - shift)[:, 0], (triangles - shift)[:, 1], (triangles - shift)[:, 2]
         return abs(float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
 
     assert volume(tight) < volume(loose), (
@@ -330,19 +336,156 @@ def test_orbital_surface_is_in_the_same_frame_as_the_atoms():
         vertices = np.vstack(pieces)
 
         # The surface is not somewhere else entirely: every orbital is centred
-        # on the molecule, and none reaches absurdly far away.
+        # on the molecule, and none reaches absurdly far away.  These bounds are
+        # deliberately close -- a Bohr/ångström mix-up inflates the envelope by
+        # 1.8897 and, on a molecule away from the origin, displaces it, so a
+        # bound loose enough to admit that is a bound that tests nothing.
         centre = vertices.mean(axis=0)
         molecule_centre = (coordinates.min(axis=0) + coordinates.max(axis=0)) / 2
-        assert np.abs(centre - molecule_centre).max() < 3.0, (
+        assert np.abs(centre - molecule_centre).max() < 0.9, (
             f"MO {index + 1} surface centre {np.round(centre, 2)} is far from "
             f"the molecule centre {np.round(molecule_centre, 2)}"
         )
-        # The mesh is in ångström, the same unit as the geometry, and the
-        # adaptive box is capped well inside this bound.
-        assert np.abs(vertices).max() < 20.0
+        # Every orbital of a 0.9 A molecule fits well inside a 3 A cube; the
+        # inflated version spanned over 5 A.
+        assert np.abs(vertices).max() < 3.0
         # A surface that was not clipped is closed by the field, so it must not
         # lie against the sampling box.  This is the invariant the old fixed
         # padding broke: the mesh ran to the box wall and read as the orbital
         # filling the whole molecule.
         if not payload.get("clipped"):
-            assert vertices.min(axis=0).min() > coordinates.min() - 20.0
+            assert vertices.min(axis=0).min() > coordinates.min() - 3.0
+
+
+def test_orbital_surface_is_translation_covariant():
+    """Moving the molecule moves the envelope with it, and changes nothing else.
+
+    ``mol.eval_gto`` reads its argument in Bohr while the app works in
+    ångström.  Passing the grid through unconverted stretches the orbital by
+    1.8897 about the *global origin*, so a molecule at the origin still looks
+    roughly right while one anywhere else gets an envelope that is too large
+    and centred on the wrong point -- the "wraps the whole molecule" report.
+
+    Both symptoms come from the same factor, so the test pins both: the shape
+    must be identical under translation (same peak, same extent, same triangle
+    count) and the envelope must sit on the atoms it was computed from.
+    """
+    shift = np.array([5.0, 3.0, -2.0])
+    at_origin = "O 0 0 0; H 0 0 0.96; H 0 0.9 0"
+    moved = "; ".join(
+        f"{line.split()[0]} {float(line.split()[1]) + shift[0]:.4f} "
+        f"{float(line.split()[2]) + shift[1]:.4f} {float(line.split()[3]) + shift[2]:.4f}"
+        for line in at_origin.split("; ")
+    )
+
+    def draw(spec):
+        return engine.dispatch("orbital_surface", {
+            "atoms": spec, "basis": "sto-3g", "method": "RHF",
+            "source": "mo", "index": 4, "pointsPerAxis": 32, "isovalue": 0.05,
+        })
+
+    here, there = draw(at_origin), draw(moved)
+
+    # The field is evaluated on a grid of the same shape in both cases, so the
+    # peak must match to grid resolution.  A Bohr/ångström mix-up moves it by
+    # percent, not by rounding.
+    assert abs(here["peak"] - there["peak"]) < 1e-6, (
+        f"the orbital peak changed under translation "
+        f"({here['peak']} vs {there['peak']}) -- the grid is not in the molecule's frame"
+    )
+
+    def extent(payload):
+        phases = [np.asarray(payload[k]["vertices"], dtype=float) for k in ("positive", "negative")]
+        points = np.vstack([p for p in phases if p.size])
+        return points.max(axis=0) - points.min(axis=0), points.mean(axis=0)
+
+    span_here, centre_here = extent(here)
+    span_there, centre_there = extent(there)
+    assert np.allclose(span_here, span_there, atol=1e-6), (
+        f"the envelope changed size under translation ({span_here} vs {span_there})"
+    )
+    assert np.allclose(centre_there - centre_here, shift, atol=1e-6), (
+        f"the envelope did not follow the molecule: moved by "
+        f"{centre_there - centre_here}, expected {shift}"
+    )
+
+    # And in absolute terms it must land on the nuclei, not near them: the
+    # oxygen is the first atom, and the 1s core-like HOMO lobe is centred on it.
+    oxygen = np.array([shift[0], shift[1], shift[2]])
+    assert np.linalg.norm(centre_there - oxygen) < 0.15, (
+        f"the envelope is centred {np.linalg.norm(centre_there - oxygen):.2f} A from the oxygen"
+    )
+
+
+def test_orbital_surface_encloses_a_physical_volume():
+    """The drawn envelope is orbital-sized, not molecule-sized.
+
+    With the grid in the wrong units the contour is inflated until it spans the
+    whole molecule; water's atoms span 0.9 A, and the inflated envelope spanned
+    over 5 A.  The correct 0.05 contour spans about 2 A, so the bound below
+    separates the two without pinning the number to the grid resolution.
+    """
+    payload = engine.dispatch("orbital_surface", {
+        "atoms": WATER, "basis": "sto-3g", "method": "RHF",
+        "source": "mo", "index": 4, "pointsPerAxis": 32, "isovalue": 0.05,
+    })
+    vertices, _n, indices = _mesh(payload["positive"])
+    assert len(vertices) > 0, "the HOMO lobe is empty at the default isovalue"
+
+    span = vertices.max(axis=0) - vertices.min(axis=0)
+    assert span.max() < 3.0, (
+        f"the HOMO lobe spans {span.max():.2f} A on a 0.9 A molecule; an "
+        f"envelope this large is the wrong-units signature"
+    )
+
+    triangles = vertices[indices.reshape(-1, 3)]
+    shift = vertices.mean(axis=0)
+    a, b, c = (triangles - shift)[:, 0], (triangles - shift)[:, 1], (triangles - shift)[:, 2]
+    volume = abs(float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
+    # A valence lobe at this contour is a couple of cubic ångström; the bound is
+    # loose because the grid spacing sets the last digit.
+    assert 0.1 < volume < 4.0, f"the HOMO lobe encloses {volume:.3f} A^3"
+
+
+def test_orbital_surface_keeps_its_resolution_when_the_box_grows():
+    """A bigger box is sampled more finely, not more coarsely.
+
+    The box has to grow for a diffuse orbital or the envelope is closed by the
+    wall instead of the field.  Growing it while holding the point count fixed
+    coarsens the spacing, and a grid too coarse to resolve the orbital draws a
+    blob whose size tracks the grid rather than the orbital -- the same wrong
+    picture as a units error, from the other direction.  The engine instead
+    scales the point count to hold the spacing.
+
+    The invariant is stated on ``gridStep``, the coarsest axis's spacing: a
+    coarsened grid still produces a well-formed, correctly-placed surface, so
+    only the spacing distinguishes it.  Benzene's pi orbital grows the box
+    enough to add points without reaching ``_MAX_POINTS_PER_AXIS``, which is the
+    case this test is about; at the cap the spacing is expected to coarsen.
+    """
+    BENZENE = ("C 0.0000 1.3960 0; C 1.2090 0.6980 0; C 1.2090 -0.6980 0; "
+               "C 0.0000 -1.3960 0; C -1.2090 -0.6980 0; C -1.2090 0.6980 0; "
+               "H 0.0000 2.4810 0; H 2.1490 1.2405 0; H 2.1490 -1.2405 0; "
+               "H 0.0000 -2.4810 0; H -2.1490 -1.2405 0; H -2.1490 1.2405 0")
+    grown = engine.dispatch("orbital_surface", {
+        "atoms": BENZENE, "basis": "sto-3g", "method": "RHF",
+        "source": "mo", "index": 20, "pointsPerAxis": 40, "isovalue": 0.05,
+    })
+
+    # The spacing the atom-sized box would have used: its widest axis is the
+    # molecule's span plus the default 1.6 A padding either side, over 40 points.
+    # A coarsened grid reports a much larger value here.
+    coords = geometry.atoms_to_coords(engine._coerce_atoms(BENZENE))
+    atom_box_step = (float(np.ptp(coords, axis=0).max()) + 2 * 1.6) / 39
+    assert abs(grown["gridStep"] - atom_box_step) < 0.01, (
+        f"the grid coarsened as the box grew: {grown['gridStep']:.3f} A spacing "
+        f"over {grown['gridPointsPerAxis']} points, against the "
+        f"{atom_box_step:.3f} A the atom-sized box would have used"
+    )
+    assert grown["gridPointsPerAxis"] > 40, (
+        "the box did not grow, so this test is not exercising the growth path"
+    )
+    assert grown["gridPointsPerAxis"] < engine._MAX_POINTS_PER_AXIS, (
+        "the box grew to the cap, so this test cannot see the spacing invariant"
+    )
+    assert not grown["clipped"]

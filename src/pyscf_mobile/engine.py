@@ -563,8 +563,24 @@ def _orbital_values(mf, atoms: list[dict], column: np.ndarray,
     axes = [np.linspace(lo[i], hi[i], points_per_axis) for i in range(3)]
     gx, gy, gz = np.meshgrid(*axes, indexing="ij")
     flat = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
-    ao = mf.mol.eval_gto("GTOval", flat)
-    values = np.asarray(ao @ column, dtype=float).reshape(points_per_axis, points_per_axis, points_per_axis)
+    # The grid is in ångström, the same frame as the atoms, but ``eval_gto``
+    # reads its argument in Bohr.  Feeding it ångström stretches the orbital by
+    # 1.8897 about the *global* origin, so the envelope is both too large and
+    # displaced from its own nuclei -- on a molecule away from the origin the
+    # two effects compound.
+    #
+    # Evaluated in slabs: ``eval_gto`` returns one row per grid point, so a
+    # diffuse orbital's grown grid asks for a million-row x nao matrix at once,
+    # which peaks near a gigabyte and is a silent jetsam kill on a phone.  A
+    # slab of rows bounds that buffer at a few megabytes without changing the
+    # values.
+    flat = flat / _BOHR_TO_ANGSTROM
+    values = np.empty(flat.shape[0], dtype=float)
+    chunk = max(1, (1 << 20) // max(int(mf.mol.nao_nr()), 1))
+    for start in range(0, flat.shape[0], chunk):
+        block = mf.mol.eval_gto("GTOval", flat[start:start + chunk])
+        values[start:start + chunk] = block @ column
+    values = values.reshape(points_per_axis, points_per_axis, points_per_axis)
     origin = [float(lo[i]) for i in range(3)]
     step = [float((hi[i] - lo[i]) / (points_per_axis - 1)) for i in range(3)]
     return values, origin, step
@@ -575,6 +591,14 @@ def _orbital_values(mf, atoms: list[dict], column: np.ndarray,
 #: past this the box is large enough that the spacing has coarsened more than
 #: the extra completeness is worth.
 _MAX_PADDING = 14.0
+
+#: Ceiling on the grid resolution the growth loop is allowed to ask for.  The
+#: cost of a cube grid is cubic in this number, so it is what bounds the memory
+#: and time the surface RPC can take on a phone: 64^3 samples a diffuse
+#: orbital's grown box at a 0.11 A spacing for a ~300 MB peak, against 0.08 A
+#: and ~850 MB unbounded.  A jetsam kill is silent, so the bound is on memory
+#: rather than on resolution.
+_MAX_POINTS_PER_AXIS = 64
 
 
 def _fitted_orbital_values(mf, atoms: list[dict], column: np.ndarray,
@@ -589,12 +613,27 @@ def _fitted_orbital_values(mf, atoms: list[dict], column: np.ndarray,
     for a closed surface is that the field is below the isovalue everywhere on
     the six faces, so the box is grown until that holds.
 
+    Growing the box also means growing the point count: holding
+    ``points_per_axis`` fixed while the box widens coarsens the spacing, and a
+    grid too coarse to resolve the orbital is the same wrong picture by another
+    route -- the surface is then a blob whose size tracks the grid, not the
+    orbital.  The point count is therefore scaled to keep the spacing at the
+    fixed-padding value, up to ``_MAX_POINTS_PER_AXIS``.
+
     Returns ``(values, origin, step, peak, clipped)``.  ``clipped`` is True only
     when the box hit ``_MAX_PADDING`` while a face was still above the isovalue,
     which the caller reports rather than silently drawing a wrong shape.
     """
+    # The spacing of the box that fits the atoms, which is what the resolution
+    # should stay at as the box grows.
+    span = float(np.ptp(geometry.atoms_to_coords(atoms), axis=0).max()) + 2.0 * padding
+    target_step = span / max(points_per_axis - 1, 1)
+
     while True:
-        values, origin, step = _orbital_values(mf, atoms, column, points_per_axis, padding)
+        width = float(np.ptp(geometry.atoms_to_coords(atoms), axis=0).max()) + 2.0 * padding
+        points = min(int(np.ceil(width / target_step)) + 1, _MAX_POINTS_PER_AXIS)
+        points = max(points, points_per_axis)
+        values, origin, step = _orbital_values(mf, atoms, column, points, padding)
         peak = float(np.abs(values).max())
         if peak <= 0.0:
             return values, origin, step, peak, False
@@ -667,8 +706,15 @@ def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: flo
         dm = dm[0] + dm[1]
     # rho(r) = sum_ij ao_i(r) D_ij ao_j(r); evaluated directly so the helper
     # works for both RHF and UHF/UKS references without API-shape surprises.
-    ao = mf.mol.eval_gto("GTOval", flat)
-    rho = np.einsum("gi,ij,gj->g", ao, dm, ao)
+    # Same Bohr/ångström conversion as ``_orbital_values``: the grid is in
+    # ångström and ``eval_gto`` wants Bohr.  Evaluated in slabs for the same
+    # memory reason: the dense AO matrix for the whole grid is what peaks.
+    flat = flat / _BOHR_TO_ANGSTROM
+    rho = np.empty(flat.shape[0], dtype=float)
+    chunk = max(1, (1 << 20) // max(int(mf.mol.nao_nr()), 1))
+    for start in range(0, flat.shape[0], chunk):
+        ao = mf.mol.eval_gto("GTOval", flat[start:start + chunk])
+        rho[start:start + chunk] = np.einsum("gi,ij,gj->g", ao, dm, ao)
     return {
         "shape": [points_per_axis] * 3,
         "origin": [round(float(lo[i]), 6) for i in range(3)],
@@ -1380,6 +1426,14 @@ def run_orbital_surface(params: dict) -> dict:
         "occupation": round(occupation, 6),
         "nBasis": int(mf.mol.nao_nr()),
         "pointsPerAxis": points,
+        # The grid the surface was actually sampled on, which exceeds
+        # ``pointsPerAxis`` when a diffuse orbital forced the box to grow: the
+        # request is a floor on the resolution, not a cap.  ``gridStep`` is the
+        # coarsest axis's spacing in ångström -- the box is rectangular, so the
+        # axes can differ, and the widest one is what the faceting shows.
+        "gridPointsPerAxis": int(values.shape[0]),
+        "gridStep": round(max(float(v) for v in step), 6),
+        "gridOrigin": [round(float(v), 6) for v in origin],
         "isovalue": round(level, 8),
         "isovalueFraction": fraction,
         "peak": round(peak, 8),
