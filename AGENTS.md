@@ -580,6 +580,15 @@ there is no push path at all: `GITHUB_TOKEN` is refused with a 403 that reads
 permission, not a scope the push can be retried into, so commit locally and ask
 for the credential to be provisioned rather than retrying.
 
+When the user supplies a personal access token directly, push with it in a
+one-shot URL and never persist it: `git push
+"https://${TOKEN}@github.com/<owner>/<repo>.git" <branch>:master`. Do not write
+it into `.git/config`, a credential helper, or the remote URL, and do not echo
+it -- pipe the command through `sed "s/${TOKEN}/<token>/g"` so the transcript is
+clean. A `--dry-run` first is worth it: it prints the exact commit range that
+would move, which is what confirms the push is a fast-forward rather than a
+rewrite of someone else's work.
+
 A tag on its own publishes nothing. A release needs the tag, the IPA, and the
 sha256; a tag without a release leaves the version with no downloadable
 artifact.
