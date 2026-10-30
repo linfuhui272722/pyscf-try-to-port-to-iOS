@@ -113,6 +113,7 @@
 "orbitals.viewer.source.boys" = "Foster-Boys";
 "orbitals.viewer.source.er" = "Edmiston-R.";
 "orbitals.viewer.localisation.unavailable" = "没有可定域化的占据轨道。";
+"orbitals.viewer.clipped" = "包络超出了采样网格范围，形状在边缘被截断。调高等值面阈值可得到更紧贴的表面。";
 "orbitals.viewer.isovalue" = "等值面阈值";
 "orbitals.viewer.show" = "显示轨道";
 "orbitals.viewer.note" = "整个分子，并在其正确位置上绘制该轨道。等值面是轨道振幅的等值面，因此它包围轨道数值较大的区域；两种颜色代表两个相位。调高等值阈值可得到更紧贴原子的包络，调低则可包围更多轨道范围。";

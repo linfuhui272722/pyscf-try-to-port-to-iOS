@@ -109,10 +109,26 @@ class Dataset:
     def __init__(self, name, data):
         self.name = name
         self._data = np.asarray(data)
+        # h5py exposes attribute-style metadata on a dataset.  PySCF writes
+        # things like ``dset.attrs['mol']`` on checkpoint files, so an empty
+        # mapping that accepts assignment is enough to keep those paths working.
+        self.attrs = {}
 
     @property
     def shape(self):
         return self._data.shape
+
+    @property
+    def ndim(self):
+        # PySCF's ``ao2mo/outcore._load_from_h5g`` branches on ``dat.ndim`` to
+        # tell a two-index from a multi-component integral store, so this has to
+        # exist: without it the ER localisation and every out-of-core AO-to-MO
+        # transform raise AttributeError on iOS only.
+        return self._data.ndim
+
+    @property
+    def size(self):
+        return self._data.size
 
     @property
     def dtype(self):
@@ -125,6 +141,32 @@ class Dataset:
     @property
     def chunks(self):
         return None
+
+    @property
+    def maxshape(self):
+        return self._data.shape
+
+    @property
+    def fillvalue(self):
+        return None
+
+    def read_direct(self, dest, source_sel=None, dest_sel=None):
+        """Copy into ``dest``, the h5py way of reading without a temporary.
+
+        PySCF's out-of-core integral loader reads each block with
+        ``read_direct`` and a pair of slices rather than ``ds[...]``, so a shim
+        without it fails the same ER path that needs ``ndim``.  Both selections
+        default to the whole array, matching h5py.
+        """
+        source = self._data if source_sel is None else self._data[source_sel]
+        if dest_sel is None:
+            dest[...] = source
+        else:
+            dest[dest_sel] = source
+        return dest
+
+    def astype(self, dtype):
+        return self._data.astype(dtype)
 
     def __getitem__(self, key):
         if key is Ellipsis:

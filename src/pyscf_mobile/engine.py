@@ -570,13 +570,71 @@ def _orbital_values(mf, atoms: list[dict], column: np.ndarray,
     return values, origin, step
 
 
-def _localized_column(mf, atoms: list[dict], kind: str, index: int) -> np.ndarray:
-    """The AO coefficients of one localised occupied orbital.
+#: How far past the atoms the sampling box may grow before it is left clipped.
+#: A diffuse orbital's envelope can reach several ångström beyond the nuclei;
+#: past this the box is large enough that the spacing has coarsened more than
+#: the extra completeness is worth.
+_MAX_PADDING = 14.0
+
+
+def _fitted_orbital_values(mf, atoms: list[dict], column: np.ndarray,
+                           points_per_axis: int, fraction: float,
+                           padding: float = 1.6) -> tuple[np.ndarray, list[float], list[float], float, bool]:
+    """Sample the orbital on a box large enough to contain its isosurface.
+
+    A fixed padding clips a diffuse orbital.  The envelope then meets the box
+    wall, and the marching step has to close the surface against that boundary:
+    what is drawn is a shell that spans the whole box rather than a lobe, which
+    reads on screen as the orbital filling the entire molecule.  The condition
+    for a closed surface is that the field is below the isovalue everywhere on
+    the six faces, so the box is grown until that holds.
+
+    Returns ``(values, origin, step, peak, clipped)``.  ``clipped`` is True only
+    when the box hit ``_MAX_PADDING`` while a face was still above the isovalue,
+    which the caller reports rather than silently drawing a wrong shape.
+    """
+    while True:
+        values, origin, step = _orbital_values(mf, atoms, column, points_per_axis, padding)
+        peak = float(np.abs(values).max())
+        if peak <= 0.0:
+            return values, origin, step, peak, False
+        level = fraction * peak
+        faces = (values[0], values[-1], values[:, 0], values[:, -1],
+                 values[:, :, 0], values[:, :, -1])
+        if max(float(np.abs(face).max()) for face in faces) <= level:
+            return values, origin, step, peak, False
+        if padding >= _MAX_PADDING:
+            return values, origin, step, peak, True
+        padding = min(padding * 1.5, _MAX_PADDING)
+
+
+def _fock_for_spin(mf, spin: int) -> np.ndarray:
+    """The Fock matrix of one spin channel, for an unrestricted reference.
+
+    ``get_fock()`` returns a single matrix for a restricted reference and either
+    a stacked ``(2, nao, nao)`` array or a pair for an unrestricted one, so the
+    channel has to be selected before the diagonal element is taken.
+    """
+    fock = mf.get_fock()
+    if isinstance(fock, (tuple, list)):
+        return np.asarray(fock[spin], dtype=float)
+    stacked = np.asarray(fock, dtype=float)
+    if stacked.ndim == 3:
+        return stacked[spin]
+    return stacked
+
+
+def _localized_column(mf, atoms: list[dict], kind: str, index: int) -> tuple[np.ndarray, int]:
+    """The AO coefficients of one localised occupied orbital, and its spin.
 
     The intrinsic methods return their orbitals as a block of occupied columns,
     so ``index`` picks one of them.  This is what gives the viewer the familiar
     picture for a localised orbital: the isosurface is built from the same
     coefficients the localisation optimised.
+
+    The spin channel comes back with the column because an unrestricted
+    reference has one Fock operator per spin, and the energy the panel reports
+    is the diagonal Fock element, which has to be taken in the right one.
 
     The localisation itself is re-run here rather than carried in from the SCF
     payload.  It is a few sweeps over the occupied pairs, which is cheap next to
@@ -587,7 +645,9 @@ def _localized_column(mf, atoms: list[dict], kind: str, index: int) -> np.ndarra
     coefficients = np.asarray(block, dtype=float)
     if not 0 <= index < coefficients.shape[1]:
         raise ValueError(f"localised orbital index {index} outside 0..{coefficients.shape[1] - 1}")
-    return coefficients[:, index]
+    spins = orbital_localization.localized_orbital_spins(mf)
+    spin = spins[index] if index < len(spins) else 0
+    return coefficients[:, index], spin
 
 
 def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: float = 1.6) -> dict:
@@ -715,6 +775,10 @@ def _electronic_structure(mf, atoms, include, localization: str | None = None) -
         "nBasis": int(mf.mol.nao_nr()),
         "nAlpha": int(mf.mol.nelec[0]),
         "nBeta": int(mf.mol.nelec[1]),
+        # The viewer's localised-orbital buttons are one per occupied orbital,
+        # which is half the electron count only for a closed shell.  Sent
+        # explicitly so an open-shell run does not under-count.
+        "nLocalizedOrbitals": int(orbital_localization.localizable_orbital_count(mf)),
         "homo": round(float(homo), 8) if homo is not None else None,
         "lumo": round(float(lumo), 8) if lumo is not None else None,
         "gap": round(float(lumo - homo), 8) if homo is not None and lumo is not None else None,
@@ -1272,19 +1336,23 @@ def run_orbital_surface(params: dict) -> dict:
         orbital_energy = float(energies[index])
         occupation = float(occupations[index])
     elif source in orbital_localization.METHODS:
-        column = _localized_column(mf, atoms, source, index)
+        column, spin_channel = _localized_column(mf, atoms, source, index)
         label = f"LMO {index + 1}"
         # A localised occupied orbital carries one electron pair, so its energy
         # is not a single MO eigenvalue; the diagonal Fock element is the
-        # meaningful one and is what the panel shows.
-        fock = np.asarray(mf.get_fock(), dtype=float)
+        # meaningful one and is what the panel shows.  An unrestricted
+        # reference has one Fock matrix per spin, so the channel matters.
+        fock = _fock_for_spin(mf, spin_channel)
         orbital_energy = float(column @ fock @ column)
-        occupation = 2.0
+        # An unrestricted reference stores alpha and beta as separate orbitals,
+        # each holding one electron; a restricted one pairs them and reports two.
+        occupations = orbital_localization.localized_orbital_occupations(mf)
+        occupation = occupations[index] if index < len(occupations) else 2.0
     else:
         raise ValueError(f"unknown orbital source: {source!r}")
 
-    values, origin, step = _orbital_values(mf, atoms, column, points, 1.6)
-    peak = float(np.abs(values).max())
+    values, origin, step, peak, clipped = _fitted_orbital_values(
+        mf, atoms, column, points, fraction)
     if peak <= 0:
         raise ValueError("the selected orbital is zero everywhere on the grid")
     level = fraction * peak
@@ -1315,6 +1383,11 @@ def run_orbital_surface(params: dict) -> dict:
         "isovalue": round(level, 8),
         "isovalueFraction": fraction,
         "peak": round(peak, 8),
+        # True only when the sampling box hit its ceiling while a face was still
+        # above the isovalue, so the envelope is cut off by the grid rather than
+        # closed by the field.  The viewer warns instead of drawing a shell that
+        # spans the box.
+        "clipped": clipped,
         "positive": positive,
         "negative": negative,
         "triangles": (len(positive["indices"]) + len(negative["indices"])) // 3,

@@ -897,6 +897,9 @@ struct OrbitalSurface {
     var isovalue: Double
     var isovalueFraction: Double
     var peak: Double
+    /// True when the sampling box was too small to contain the envelope, so the
+    /// surface is cut off by the grid rather than closed by the orbital itself.
+    var clipped: Bool
     var positive: OrbitalPhase
     var negative: OrbitalPhase
 
@@ -911,6 +914,7 @@ struct OrbitalSurface {
         isovalue = json.number("isovalue") ?? 0
         isovalueFraction = json.number("isovalueFraction") ?? 0
         peak = json.number("peak") ?? 0
+        clipped = json.value("clipped") as Bool? ?? false
         positive = OrbitalPhase(json.object("positive") ?? JSONObject([:]))
         negative = OrbitalPhase(json.object("negative") ?? JSONObject([:]))
     }
@@ -931,6 +935,9 @@ struct ScfResult {
     var nBasis: Int
     var nAlpha: Int
     var nBeta: Int
+    /// One per occupied orbital, which is half the electron count only for a
+    /// closed shell; the viewer's localised-orbital buttons come from this.
+    var nLocalizedOrbitals: Int
     var homo: Double?
     var lumo: Double?
     var gap: Double?
@@ -968,6 +975,8 @@ struct ScfResult {
         nBasis = json.integer("nBasis") ?? 0
         nAlpha = json.integer("nAlpha") ?? 0
         nBeta = json.integer("nBeta") ?? 0
+        // Older payloads predate the field; fall back to the closed-shell count.
+        nLocalizedOrbitals = json.integer("nLocalizedOrbitals") ?? (nElectrons / 2)
         homo = json.number("homo")
         lumo = json.number("lumo")
         gap = json.number("gap")

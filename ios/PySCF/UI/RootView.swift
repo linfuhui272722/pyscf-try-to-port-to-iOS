@@ -271,6 +271,27 @@ struct OrbitalsScreen: View {
                     }
                 }
 
+                // A localisation request that fails used to leave the viewer
+                // unchanged, so a button that could not be served looked like
+                // one that did nothing when tapped.  The message is shown here
+                // as well as on the builder page.
+                if let message = model.errorMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // A surface the grid could not contain is cut off at the box
+                // wall, which reads as the orbital spilling over the molecule.
+                // Say so rather than let it look like a real shape.
+                if let surface = model.orbitalSurface, surface.clipped {
+                    Text(L("orbitals.viewer.clipped"))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 // The molecule and the orbital share one scene, so the envelope
                 // is drawn at its correct place in the molecule rather than in
                 // a frame of its own.
@@ -380,12 +401,14 @@ struct OrbitalsScreen: View {
 
     /// The localised occupied orbitals, one button each.
     ///
-    /// There are half as many as there are electrons, and the localisation is
-    /// what turns them into bonds and lone pairs, so the count comes from the
-    /// occupied space rather than from the ladder.
+    /// The count is one per occupied orbital, which is half the electron count
+    /// only for a closed shell: an open-shell reference has a singly occupied
+    /// orbital per unpaired electron as well.  The engine sends the count
+    /// because it is the one that knows which of the occupied columns are
+    /// localisable.
     @ViewBuilder
     private func localisedSelector(_ result: ScfResult) -> some View {
-        let count = max(result.nElectrons / 2, 0)
+        let count = max(result.nLocalizedOrbitals, 0)
         if count == 0 {
             Text(L("orbitals.viewer.localisation.unavailable"))
                 .font(.caption)

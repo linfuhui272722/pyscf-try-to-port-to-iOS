@@ -113,6 +113,7 @@
 "orbitals.viewer.source.boys" = "Foster-Boys";
 "orbitals.viewer.source.er" = "Edmiston-R.";
 "orbitals.viewer.localisation.unavailable" = "No occupied orbitals to localise.";
+"orbitals.viewer.clipped" = "The envelope reaches past the sampled grid, so its shape is cut off at the edge. Raise the isovalue for a tighter surface.";
 "orbitals.viewer.isovalue" = "Isovalue";
 "orbitals.viewer.show" = "Show orbital";
 "orbitals.viewer.note" = "The whole molecule with the orbital drawn at its position. The envelope is the isosurface of the orbital amplitude, so it encloses the region where the orbital is large; the two colours are its two phases. Raise the isovalue for a tighter envelope that hugs the atoms, lower it to enclose more of the orbital.";

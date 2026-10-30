@@ -332,15 +332,89 @@ def _composition(mol, overlap: np.ndarray, orbitals: np.ndarray) -> dict[str, An
     }
 
 
-def _closed_shell(mf) -> bool:
-    """Whether the reference has a well-defined occupied space to rotate.
+def _localisable_groups(mf) -> list[tuple[np.ndarray, int]]:
+    """The occupied columns, grouped by the space each may be rotated within.
 
-    The occupation numbers are the test rather than the class, because an
-    open-shell reference built with ``ROHF`` has an even electron count but
-    singly occupied orbitals, which these methods cannot rotate.
+    Each group is ``(coefficients, spin)`` with coefficients shaped
+    ``(nao, n)``.  A rotation has to stay inside a space the wavefunction is
+    invariant over, and that space is not the whole occupied set once the
+    reference is open shell:
+
+    * an unrestricted reference stores alpha and beta separately and the two
+      are eigenvectors of different Fock operators, so each occupied set is
+      rotated on its own -- mixing them would change the spin density;
+    * a restricted open-shell reference has one coefficient block, and only its
+      doubly occupied columns may be rotated among themselves.  A singly
+      occupied column is returned as a group of its own, which the loop leaves
+      untouched because a single column has nothing to rotate with.
+
+    A closed-shell reference gives the single group the earlier code assumed,
+    so nothing changes for it.
     """
     occupations = np.asarray(mf.mo_occ, dtype=float)
-    return bool(np.all(np.isclose(occupations, 0.0) | np.isclose(occupations, 2.0)))
+    if occupations.ndim == 2:
+        blocks = mf.mo_coeff
+        if not isinstance(blocks, (tuple, list)):
+            stacked = np.asarray(blocks, dtype=float)
+            blocks = [stacked[spin] for spin in range(stacked.shape[0])]
+        groups = []
+        for spin, block in enumerate(blocks):
+            occupied = np.where(occupations[spin] > 0.5)[0]
+            groups.append((np.asarray(block, dtype=float)[:, occupied], spin))
+        return groups
+
+    block = np.asarray(mf.mo_coeff, dtype=float)
+    paired = np.where(np.isclose(occupations, 2.0))[0]
+    groups = [(block[:, paired], 0)]
+    for column in np.where(np.isclose(occupations, 1.0))[0]:
+        groups.append((block[:, [column]], 0))
+    return groups
+
+
+def localized_orbital_spins(mf) -> list[int]:
+    """The spin channel of each column ``localize_coefficients`` returns.
+
+    The viewer needs this to pick the right Fock matrix when it reports a
+    localised orbital's energy, because an unrestricted reference has one Fock
+    operator per spin.
+    """
+    spins: list[int] = []
+    for block, spin in _localisable_groups(mf):
+        spins.extend([spin] * block.shape[1])
+    return spins
+
+
+def localized_orbital_occupations(mf) -> list[float]:
+    """The electron count of each column ``localize_coefficients`` returns.
+
+    Two for a closed-shell pair or a restricted open-shell pair, one for a
+    singly occupied column and for every column of an unrestricted reference,
+    where the alpha and beta partners are separate orbitals.
+    """
+    occupations = np.asarray(mf.mo_occ, dtype=float)
+    if occupations.ndim == 2:
+        result: list[float] = []
+        for spin, (coefficients, _spin) in enumerate(_localisable_groups(mf)):
+            occupied = occupations[spin][occupations[spin] > 0.5]
+            result.extend([float(occupied.mean())] * coefficients.shape[1])
+        return result
+    result = []
+    for coefficients, _spin in _localisable_groups(mf):
+        if coefficients.shape[1] == 1:
+            result.append(1.0)
+        else:
+            result.extend([2.0] * coefficients.shape[1])
+    return result
+
+
+def localizable_orbital_count(mf) -> int:
+    """How many localised orbitals a reference yields.
+
+    Half the electron count only for a closed shell: an open-shell reference has
+    one orbital per singly occupied column as well, so the viewer's button count
+    cannot be derived from the electron count alone.
+    """
+    return sum(block.shape[1] for block, _spin in _localisable_groups(mf))
 
 
 def localize_coefficients(
@@ -348,32 +422,45 @@ def localize_coefficients(
 ) -> tuple[np.ndarray, int, float]:
     """The localised occupied coefficients of a converged mean field.
 
-    Returns ``(coefficients, sweeps, objective)``.  ``coefficients`` has the
-    same shape as ``mf.mo_coeff[:, :nelectron//2]``: it is that block after the
-    rotations, so it still spans the occupied space and stays orthonormal.  The
+    Returns ``(coefficients, sweeps, objective)``.  ``coefficients`` holds every
+    occupied orbital, rotated within the spaces it is legal to rotate in (see
+    ``_localisable_groups``); the columns are ordered alpha-occupied then
+    beta-occupied for an unrestricted reference, and paired-then-singly-occupied
+    for a restricted open-shell one.  Each channel is orthonormal on its own; the
+    alpha and beta blocks of an unrestricted reference are not mutually
+    orthogonal, because they are eigenvectors of different Fock operators and
+    that is a property of the reference rather than of the localisation.  The
     orbital viewer and the tests both work from this rather than from the JSON.
 
-    Raises ``ValueError`` for an unknown method or a reference without a closed
-    shell, because these methods rotate the occupied space and that space is
-    only defined for a closed shell.
+    Raises ``ValueError`` for an unknown method.
     """
     key = str(method).lower()
     if key not in _METHODS:
         raise ValueError(f"unknown localization method: {method!r}")
     mol = mf.mol
-    if not _closed_shell(mf):
-        raise ValueError("orbital localisation needs a closed-shell reference")
     overlap = np.asarray(mol.intor_symmetric("int1e_ovlp"), dtype=float)
-    orbitals = np.asarray(mf.mo_coeff, dtype=float)[:, : mol.nelectron // 2].copy()
     population = _METHODS[key][1]
-    if key in ("pm-mulliken", "pm-lowdin"):
-        engine = _PipekMezey(mol, overlap, orbitals, population.lower())
-    elif key == "boys":
-        engine = _Boys(mol, orbitals)
-    else:
-        engine = _EdmistonRuedenberg(mol, orbitals)
-    sweeps, objective = _localise(engine)
-    return engine.ao_coefficients(), sweeps, objective
+
+    columns: list[np.ndarray] = []
+    sweeps = 0
+    objective = 0.0
+    for block, _spin in _localisable_groups(mf):
+        if block.shape[1] < 2:
+            # Nothing to mix a lone column with; carry it through unchanged.
+            columns.append(block)
+            continue
+        orbitals = np.ascontiguousarray(block, dtype=float).copy()
+        if key in ("pm-mulliken", "pm-lowdin"):
+            engine = _PipekMezey(mol, overlap, orbitals, population.lower())
+        elif key == "boys":
+            engine = _Boys(mol, orbitals)
+        else:
+            engine = _EdmistonRuedenberg(mol, orbitals)
+        group_sweeps, group_objective = _localise(engine)
+        sweeps = max(sweeps, group_sweeps)
+        objective += group_objective
+        columns.append(engine.ao_coefficients())
+    return np.concatenate(columns, axis=1), sweeps, objective
 
 
 def localize(

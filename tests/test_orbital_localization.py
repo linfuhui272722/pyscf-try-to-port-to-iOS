@@ -268,11 +268,57 @@ def test_unknown_method_is_rejected():
     raise AssertionError("an unknown method should raise ValueError")
 
 
-def test_open_shell_is_declined():
-    """The methods rotate the occupied space, which needs a closed shell."""
+def test_open_shell_is_localised_per_spin_channel():
+    """An open shell is localised, but only within each spin channel.
+
+    The methods rotate the occupied space, and for an open-shell reference that
+    space splits: the singly occupied columns of a restricted open-shell run are
+    not mixed with the pairs, and the alpha and beta sets of an unrestricted run
+    stay apart.  The orbitals that come back must still be orthonormal and must
+    still span the occupied space.
+    """
     mol = gto.M(atom="O 0 0 0; O 0 0 1.2075", basis="6-31g", spin=2, verbose=0)
     mf = scf.ROHF(mol).run()
-    assert orbital_localization.localize(mf, _atoms(mol), method="pm-mulliken") is None
+
+    result = orbital_localization.localize(mf, _atoms(mol), method="pm-mulliken")
+    assert result is not None, "a restricted open-shell reference should localise"
+
+    coefficients, _sweeps, _objective = orbital_localization.localize_coefficients(
+        mf, method="pm-mulliken")
+    overlap = mol.intor_symmetric("int1e_ovlp")
+    # Still an orthonormal set spanning the same occupied space.
+    assert np.allclose(coefficients.T @ overlap @ coefficients, np.eye(coefficients.shape[1]),
+                       atol=1e-8)
+    assert coefficients.shape[1] == orbital_localization.localizable_orbital_count(mf)
+    # The singly occupied columns are carried through, so one spin channel holds
+    # two more orbitals than the other for a triplet.
+    spins = orbital_localization.localized_orbital_spins(mf)
+    assert len(spins) == coefficients.shape[1]
+
+
+def test_unrestricted_localisation_keeps_the_spin_channels_apart():
+    """UHF stores alpha and beta separately and each is rotated on its own."""
+    mol = gto.M(atom="O 0 0 0; O 0 0 1.2075", basis="6-31g", spin=2, verbose=0)
+    mf = scf.UHF(mol).run()
+
+    coefficients, _sweeps, _objective = orbital_localization.localize_coefficients(
+        mf, method="boys")
+    occupations = np.asarray(mf.mo_occ)
+    alpha = int(np.sum(occupations[0] > 0.5))
+    beta = int(np.sum(occupations[1] > 0.5))
+    assert coefficients.shape[1] == alpha + beta
+    spins = orbital_localization.localized_orbital_spins(mf)
+    assert spins == [0] * alpha + [1] * beta
+
+    # Rotating within a channel cannot change the number of electrons in it,
+    # and each channel stays orthonormal on its own.  The two channels are not
+    # mutually orthogonal -- alpha and beta are eigenvectors of different Fock
+    # operators -- so only the within-channel property is asserted here.
+    overlap = mol.intor_symmetric("int1e_ovlp")
+    alpha_block = coefficients[:, :alpha]
+    beta_block = coefficients[:, alpha:]
+    assert np.allclose(alpha_block.T @ overlap @ alpha_block, np.eye(alpha), atol=1e-8)
+    assert np.allclose(beta_block.T @ overlap @ beta_block, np.eye(beta), atol=1e-8)
 
 
 def test_payload_shape():

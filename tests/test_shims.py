@@ -334,6 +334,45 @@ def test_h5py_low_level_create_dataset_is_zero_filled_and_writable():
             assert np.all(got[1, :, 0] == 0.0)
 
 
+def test_h5py_dataset_exposes_the_metadata_pyscf_reads():
+    """The dataset attributes PySCF's out-of-core loader branches on.
+
+    ``ao2mo/outcore._load_from_h5g`` reads ``dat.ndim`` to tell a two-index
+    store from a multi-component one, and reads each block with ``read_direct``
+    rather than ``ds[...]``.  Both were missing, so Edmiston-Ruedenberg failed
+    on iOS only, with an AttributeError that never appears on the build host.
+    """
+    _vendored()
+    import h5py
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "ints.h5")
+        with h5py.File(path, "w") as fh:
+            ds = fh.create_dataset("eri", (2, 3, 4), "f8")
+            ds[0] = 1.0
+            ds[1, :, 2] = 7.0
+
+        with h5py.File(path, "r") as fh:
+            ds = fh["eri"]
+            assert ds.ndim == 3
+            assert ds.size == 24
+            assert ds.maxshape == (2, 3, 4)
+            assert ds.fillvalue is None
+            assert ds.chunks is None
+            # read_direct with and without explicit selections.
+            whole = np.zeros((2, 3, 4))
+            ds.read_direct(whole)
+            assert whole[0].sum() == 12.0
+            assert np.all(whole[1, :, 2] == 7.0)
+            block = np.zeros((3, 4))
+            ds.read_direct(block, np.s_[1], np.s_[:])
+            assert np.all(block[:, 2] == 7.0)
+            assert ds.astype("f4").dtype == np.float32
+            # Attribute-style metadata, which PySCF writes on checkpoints.
+            ds.attrs["mol"] = "water"
+            assert ds.attrs["mol"] == "water"
+
+
 def test_h5py_is_hdf5_accepts_an_open_file():
     _vendored()
     import h5py
@@ -466,3 +505,45 @@ def test_density_fitting_runs_on_the_shims():
     assert result["converged"]
     # Reference from the host SciPy with the same request.
     assert abs(result["energy"] - (-75.985355)) < 1e-5
+
+
+def test_orbital_localisation_runs_on_the_shims():
+    """Every localisation method must work with the vendored SciPy.
+
+    This is the device path: ``vendor.install(force=True)`` puts the shims first
+    and PySCF's ``lo`` helpers reach for ``scipy.linalg``, so a method that
+    works on the host can still fail on device.  Edmiston-Ruedenberg is the one
+    that used to, through ``h5py``'s dataset interface.
+    """
+    _vendored()
+    from pyscf_mobile import engine
+
+    for method in ("pm-mulliken", "pm-lowdin", "boys", "er"):
+        payload = engine.dispatch("scf", {
+            "atoms": "O 0 0 0; H 0 0 0.96; H 0 0.9 0",
+            "basis": "sto-3g",
+            "method": "RHF",
+            "include": [f"localization:{method}"],
+        })
+        assert payload["ok"] is True, f"{method} failed: {payload.get('error')}"
+        assert payload["localization"]["localization"] == method
+        assert len(payload["localization"]["centroids"]) == 5
+
+
+def test_localised_orbital_surface_runs_on_the_shims():
+    """The viewer's own request, for each method, on the device stack."""
+    _vendored()
+    from pyscf_mobile import engine
+
+    for method in ("pm-mulliken", "boys", "er"):
+        payload = engine.dispatch("orbital_surface", {
+            "atoms": "O 0 0 0; H 0 0 0.96; H 0 0.9 0",
+            "basis": "sto-3g",
+            "method": "RHF",
+            "source": method,
+            "index": 1,
+            "pointsPerAxis": 24,
+        })
+        assert payload["ok"] is True, f"{method} failed: {payload.get('error')}"
+        assert payload["label"] == "LMO 2"
+        assert payload["occupation"] == 2.0
