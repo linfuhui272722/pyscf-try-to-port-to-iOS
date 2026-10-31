@@ -507,6 +507,126 @@ if all(strings_tables.values()):
     check(not undefined, "every string the UI asks for is defined",
           ", ".join(undefined[:5]))
 
+    # A specifier that disagrees with the type of the argument passed for it
+    # crashes on the device and nothing else here notices: `%@` reads its
+    # argument as an object pointer, so an Int reaches it as a small integer and
+    # is dereferenced as an address.  The release check above only compares the
+    # two languages with each other, and both languages had `%@` here.
+    #
+    # Only the cases that can be told apart from the source are judged, and an
+    # argument that cannot be classified is left alone, so this stays a check on
+    # the mistake rather than on the author's style.
+    def _split_top_level(text):
+        parts, depth, quote, current = [], 0, False, []
+        for character in text:
+            if quote:
+                current.append(character)
+                if character == '"':
+                    quote = False
+                continue
+            if character == '"':
+                quote = True
+            elif character in "([":
+                depth += 1
+            elif character in ")]":
+                depth -= 1
+            elif character == "," and depth == 0:
+                parts.append("".join(current).strip())
+                current = []
+                continue
+            current.append(character)
+        if current:
+            parts.append("".join(current).strip())
+        return [part for part in parts if part]
+
+    def _arguments_after(source, start):
+        """The arguments of the call whose argument list starts at ``start``."""
+        depth, quote, index = 0, False, start
+        while index < len(source):
+            character = source[index]
+            if quote:
+                if character == '"':
+                    quote = False
+            elif character == '"':
+                quote = True
+            elif character in "([":
+                depth += 1
+            elif character in ")]":
+                depth -= 1
+                if depth == 0:
+                    return _split_top_level(source[start + 1:index])
+            index += 1
+        return []
+
+    def _argument_kind(argument):
+        """``"text"``, ``"number"``, or ``None`` when the source does not say."""
+        if argument.startswith('"'):
+            return "text"
+        if "Int(" in argument:
+            return "number"
+        if _re.fullmatch(r"-?\d+", argument):
+            return "number"
+        if argument.startswith("String("):
+            return "text"
+        # Arithmetic outside any nested call, e.g. ``scope.total - scope.valence``,
+        # which can only produce a number.
+        quote, depth = False, 0
+        for character in argument:
+            if quote:
+                if character == '"':
+                    quote = False
+            elif character == '"':
+                quote = True
+            elif character in "([":
+                depth += 1
+            elif character in ")]":
+                depth -= 1
+            elif depth == 0 and character in "+-*":
+                return "number"
+        return None
+
+    # The full specifier is matched so that flags and widths are consumed with
+    # it, but only the conversion character decides the argument's type.
+    specifier = _re.compile(r"%[-+ #0]*[0-9.]*(l{1,2}d|d|i|u|f|e|g|@|s)")
+    mismatched_arguments = []
+    for directory, _, files in os.walk(source_root):
+        for name in files:
+            if not name.endswith(".swift"):
+                continue
+            path = os.path.join(directory, name)
+            with open(path, encoding="utf-8") as handle:
+                source = handle.read()
+            for match in _re.finditer(r'\bLF\("([a-zA-Z0-9._]+)"', source):
+                key = match.group(1)
+                if key not in english:
+                    continue
+                # ``match`` covers ``LF("key"``, so the argument list opens two
+                # characters into it.  The key is the first argument and is not
+                # one of the values the format string is filled with.
+                arguments = _arguments_after(source, match.start() + 2)[1:]
+                conversions = [found.group(1) for found in specifier.finditer(english[key])]
+                # Fewer arguments than specifiers reads whatever follows on the
+                # stack, so it is flagged.  More arguments than specifiers is
+                # harmless -- ``String(format:)`` ignores the extras -- and is
+                # left alone rather than made into a build failure.
+                if len(arguments) < len(conversions):
+                    mismatched_arguments.append(
+                        f"{name}: {key} has {len(conversions)} specifier(s) for "
+                        f"{len(arguments)} argument(s)")
+                    continue
+                for conversion, argument in zip(conversions, arguments):
+                    kind = _argument_kind(argument)
+                    if kind is None:
+                        continue
+                    if conversion == "@" and kind == "number":
+                        mismatched_arguments.append(
+                            f"{name}: {key} formats a number with %@ ({argument})")
+                    elif conversion in ("d", "i", "u", "ld", "lld") and kind == "text":
+                        mismatched_arguments.append(
+                            f"{name}: {key} formats text with %{conversion} ({argument})")
+    check(not mismatched_arguments, "format specifiers match their arguments",
+          "; ".join(sorted(set(mismatched_arguments))[:3]))
+
 required = {
     "CFBundleIdentifier": str,
     "CFBundleExecutable": str,

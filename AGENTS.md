@@ -452,6 +452,23 @@ Also, this toolchain's Swift does **not** accept `@ViewBuilder` on a parameter o
 function type, so a reusable button cannot take a builder closure. `orbitalButton`
 takes an already-built `Label: View` instead.
 
+### A format specifier must match its argument's type
+
+`LF(key, ...)` is `String(format:)`, so `%@` reads its argument as an object
+pointer. Passing an `Int` to a `%@` reaches the formatter as a small integer and
+is dereferenced as an address: **the app segfaults the moment that text is
+rendered**, and the crash report points at the formatter rather than the call
+site. `orbitals.viewer.scope.hidden` did exactly this — the scope control
+rendered as soon as a run had a core orbital, so any SCF or DFT run on a molecule
+with a non-hydrogen atom crashed on opening the Orbitals screen.
+
+Use `%d` for integers, `%@` for strings, and `String(format:)` in Swift to turn a
+number into the string an `%@` expects. `validate-ios-app.sh` checks every `LF(`
+call site against the English format string and fails the build when a number is
+formatted with `%@` (or text with `%d`). The cross-language check above it does
+not catch this: it only compares the two languages with each other, and both had
+`%@`.
+
 ## Testing notes
 
 `test_shims.py` rewrites `sys.path` to put the vendored shims ahead of the real

@@ -216,5 +216,5 @@
 "orbitals.viewer.scope" = "Orbitals shown";
 "orbitals.viewer.scope.all" = "All";
 "orbitals.viewer.scope.valence" = "Valence only";
-"orbitals.viewer.scope.hidden" = "Hiding %@ core orbital(s)";
+"orbitals.viewer.scope.hidden" = "Hiding %d core orbital(s)";
 "orbitals.viewer.coreBadge" = "core";

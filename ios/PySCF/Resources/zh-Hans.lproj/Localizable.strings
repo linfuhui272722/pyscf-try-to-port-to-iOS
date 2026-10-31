@@ -216,5 +216,5 @@
 "orbitals.viewer.scope" = "显示的轨道";
 "orbitals.viewer.scope.all" = "全部";
 "orbitals.viewer.scope.valence" = "仅价层";
-"orbitals.viewer.scope.hidden" = "已隐藏 %@ 个内层轨道";
+"orbitals.viewer.scope.hidden" = "已隐藏 %d 个内层轨道";
 "orbitals.viewer.coreBadge" = "内层";
