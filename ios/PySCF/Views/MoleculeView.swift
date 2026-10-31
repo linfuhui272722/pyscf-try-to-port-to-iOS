@@ -119,21 +119,27 @@ struct MoleculeView: UIViewRepresentable {
             installLights(in: scene)
         }
 
-        /// A ring of equal lamps around the model, plus a surrounding light
-        /// image, parented to the camera.
+        /// An icosahedral ring of equal lamps around the model, plus a
+        /// surrounding light image, parented to the camera.
         ///
         /// Parented to the camera so the shading does not change when a larger
-        /// molecule pushes the camera back.  The rig is omnidirectional: the six
-        /// lamps sit on ±x, ±y and ±z at equal intensity, so no direction is
-        /// brighter than another, and ``lightingEnvironment`` fills every
-        /// remaining direction at once.  The earlier key/fill/rim trio all sat on
-        /// the camera side, which left the far side of the cloud black — the
-        /// colours there were unreadable — and put the brightest light where the
-        /// viewer was looking.
+        /// molecule pushes the camera back.
+        ///
+        /// The rig has to be genuinely omnidirectional, and two earlier attempts
+        /// were not.  Key/fill/rim at 700/320/260 all sat on the camera side, so
+        /// the far side of the cloud fell into shadow and the dark end of the
+        /// ramp came out black.  Six lamps on ±x, ±y and ±z are symmetric through
+        /// the origin and their direction sum is exactly zero, which made them
+        /// *look* omnidirectional — but a lamp on each axis leaves the diagonals
+        /// lit by three lamps against the axis's one, so irradiance ran 1.00 on
+        /// an axis to 1.73 at a corner.  ``MoleculeLayout.lamps`` now sits on the
+        /// vertices of a regular icosahedron, which measures 1.17, and
+        /// ``MoleculeLayout/irradianceSpread`` is the check.
         ///
         /// No ``ambient`` is set on the lamps: SceneKit sums ambient across
-        /// lights, so a floor set here would be multiplied by six.  The floor is
-        /// the light image's intensity instead — see
+        /// lights, so a floor set here would be multiplied by twelve.  The floor
+        /// is the light image's intensity instead, which is also what flattens
+        /// the rig's residual directionality — see
         /// ``MoleculeLayout/environmentIntensity``.
         private func installLights(in scene: SCNScene) {
             for lamp in MoleculeLayout.lamps {
@@ -152,7 +158,8 @@ struct MoleculeView: UIViewRepresentable {
 
             // Light from every direction at once: image-based lighting, so it
             // reaches the crevices between the lamps that no lamp can, and being
-            // uniform it adds light without adding a direction.
+            // uniform it adds light without adding a direction.  This carries
+            // most of the illumination; the lamps only shape the form.
             scene.lightingEnvironment.contents = Self.lightFaces()
             scene.lightingEnvironment.intensity =
                 CGFloat(MoleculeLayout.environmentIntensity)
@@ -376,10 +383,7 @@ struct MoleculeView: UIViewRepresentable {
             material.roughness.contents = 0.6
             material.metalness.contents = 0.0
             material.isDoubleSided = false
-            // Writing depth but not testing it against itself would make two
-            // overlapping surfaces fight where they meet; leaving the test on
-            // and the writes off lets them blend.
-            material.writesToDepthBuffer = false
+            material.writesToDepthBuffer = MoleculeLayout.orbitalWritesDepth
             material.blendMode = .alpha
             geometry.materials = [material]
 
@@ -396,20 +400,29 @@ struct MoleculeView: UIViewRepresentable {
         /// with a ``.color`` source present the vertex colour is multiplied by
         /// it, and anything but white would tint every region the same way.
         ///
-        /// ``isDoubleSided`` is false, and the depth write is on — unlike the
-        /// orbital, which turns it off.  The two overlays are opposite cases. The
-        /// orbital is a set of open lobes whose walls overlap, so writing depth
-        /// would make them fight where they meet.  This one is a single closed
-        /// surface enclosing the molecule: with the write on, only the near wall
-        /// draws, so the molecule inside is seen through exactly one layer of
-        /// colour.  Turning the write off would draw the far wall as well, and the
-        /// veil over the atoms would compound from one layer to two — the
-        /// opposite of what the user asked for.
+        /// ``writesToDepthBuffer`` is **false**, and that is the whole reason the
+        /// opacity slider works.  It used to be true, on the theory that a
+        /// closed surface should hide its own far wall.  What it actually did
+        /// was hide the *molecule*: the cloud's near wall writes depth, so every
+        /// atom behind it failed the depth test and was never drawn at all.  The
+        /// screen showed the cloud composited over the background, with no
+        /// molecule underneath — which is why the user saw the molecule as
+        /// hidden *and* why dragging the transparency slider changed nothing,
+        /// since there was nothing behind the cloud for it to reveal.  Apple's
+        /// own guidance is the opposite of what the old code assumed:
+        /// "Typically, you disable writing to the depth buffer when rendering
+        /// semitransparent objects."
+        ///
+        /// The far wall stays out of the picture anyway, by back-face culling
+        /// rather than by depth: the engine orients every triangle outward and
+        /// ``isDoubleSided`` is false, so the far wall is discarded before it can
+        /// blend.  That keeps the veil at exactly one layer while letting the
+        /// atoms show through it — the same arrangement as the orbital lobes,
+        /// which is why that slider always worked.
         ///
         /// Roughness is high because the material is physically based: with a
-        /// smooth one the six lamps concentrate into a small highlight that is
-        /// hard on the eyes, and the low end of the ramp goes black in the
-        /// shadows between them.
+        /// smooth one the lamps concentrate into a small highlight that is
+        /// hard on the eyes.
         private static func makeColouredNode(
             _ mesh: DensityMesh, opacity: Double, renderingOrder: Int
         ) -> SCNNode {
@@ -459,10 +472,7 @@ struct MoleculeView: UIViewRepresentable {
             material.metalness.contents = 0.0
             material.transparency = CGFloat(opacity)
             material.isDoubleSided = false
-            // Stated rather than left to the default, because the orbital next
-            // door sets the opposite and the two are deliberate: see the note on
-            // this method.
-            material.writesToDepthBuffer = true
+            material.writesToDepthBuffer = MoleculeLayout.cloudWritesDepth
             material.blendMode = .alpha
             geometry.materials = [material]
 

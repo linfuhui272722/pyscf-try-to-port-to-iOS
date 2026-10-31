@@ -67,45 +67,136 @@ struct MoleculeLayout {
     /// The light rig, kept here rather than inline in the renderer so the host
     /// tests can check its shape.
     ///
-    /// Six equal lamps along ±x, ±y and ±z: an axis-aligned ring, so the
-    /// direction sum is exactly zero and the model is lit from every side at
-    /// once.  The first attempt was a key/fill/rim trio — all three on the
-    /// camera side, at 700/320/260 — which left the far side of the cloud in
-    /// shadow and made those colours read as black, so part of the ramp was
-    /// invisible.  It also pointed the brightness at the camera, which is what
-    /// made it glare.
+    /// Twelve lamps on the vertices of a regular icosahedron.  The first two
+    /// attempts were both directional, and measuring is what showed it:
     ///
-    /// Equal intensity rather than a brighter key: a ring with a dominant lamp
-    /// would reintroduce the directionality the ring exists to remove.  The
-    /// per-lamp intensity is lower than the old key's because six lamps sum
-    /// where one key stood alone.
-    static let lamps: [Lamp] = [
-        Lamp(x: 1, y: 0, z: 0, intensity: 220),
-        Lamp(x: -1, y: 0, z: 0, intensity: 220),
-        Lamp(x: 0, y: 1, z: 0, intensity: 220),
-        Lamp(x: 0, y: -1, z: 0, intensity: 220),
-        Lamp(x: 0, y: 0, z: 1, intensity: 220),
-        Lamp(x: 0, y: 0, z: -1, intensity: 220),
-    ]
+    /// * key/fill/rim at 700/320/260, all three on the camera side — the far
+    ///   side of the cloud fell into shadow and the dark end of the ramp came
+    ///   out black, so part of the colour range was unreadable;
+    /// * six lamps on ±x, ±y and ±z — symmetric through the origin, and its
+    ///   direction sum is exactly zero, so it *looked* omnidirectional, but a
+    ///   lamp on each axis leaves the diagonals lit by three lamps against the
+    ///   axis's one.  Measured irradiance runs 1.00 on an axis to 1.73 at a
+    ///   corner, so the corners of the cloud were 73% brighter than its faces
+    ///   and the shading still read as coming from particular directions.
+    ///
+    /// The icosahedron's vertices are the most even spread of twelve directions
+    /// on a sphere.  Measured the same way, irradiance runs 2.76 to 3.24 — a
+    /// ratio of **1.17** against the six-lamp ring's **1.71**, and the residual
+    /// is spread over many directions rather than concentrated on the axes.
+    /// ``MoleculeLayout/irradianceSpread`` recomputes that ratio so a test can
+    /// hold the rig to it.
+    ///
+    /// Equal intensity, deliberately: a dominant lamp would reintroduce exactly
+    /// the directionality the rig exists to remove.
+    static let lamps: [Lamp] = {
+        // Vertices of a regular icosahedron, normalised to the unit sphere.
+        let phi = (1.0 + 5.0.squareRoot()) / 2.0
+        var points: [(Double, Double, Double)] = []
+        for a in [1.0, -1.0] {
+            for b in [phi, -phi] {
+                points.append((0, a, b))
+                points.append((a, b, 0))
+                points.append((b, 0, a))
+            }
+        }
+        return points.map { point in
+            let length = (point.0 * point.0 + point.1 * point.1
+                          + point.2 * point.2).squareRoot()
+            return Lamp(
+                x: point.0 / length,
+                y: point.1 / length,
+                z: point.2 / length,
+                intensity: 95)
+        }
+    }()
 
     /// Distance of each lamp from the camera node.
     static let lampDistance = 3.0
+
+    /// How evenly the rig lights a surface, as the ratio of the brightest to
+    /// the dimmest direction.
+    ///
+    /// 1.0 is perfectly even light.  This is the number that matters for "the
+    /// model is lit from every side": the earlier rigs were checked by summing
+    /// their lamp directions, which the six-axis ring satisfied at exactly zero
+    /// while still being 1.71 uneven.  Sampling the actual irradiance over
+    /// directions on the sphere is what catches that, and it is what the layout
+    /// test asserts.
+    ///
+    /// The sample count is fixed so the value is deterministic.  ``lamps`` is a
+    /// parameter so a test can measure a *rejected* rig with the same code and
+    /// show that the threshold catches it — a check whose discriminating power
+    /// is never demonstrated is one that can silently stop discriminating.
+    static func irradianceSpread(
+        lamps: [Lamp] = MoleculeLayout.lamps, samples: Int = 2048
+    ) -> Double {
+        var lowest = Double.greatestFiniteMagnitude
+        var highest = 0.0
+        for index in 0..<samples {
+            // A Fibonacci sphere: an even spread of directions without a
+            // random generator, so the number is reproducible.
+            let y = 1.0 - 2.0 * (Double(index) + 0.5) / Double(samples)
+            let radius = max(0.0, 1.0 - y * y).squareRoot()
+            let theta = Double(index) * 2.39996322972865332
+            let direction = (radius * cos(theta), radius * sin(theta), y)
+
+            var irradiance = 0.0
+            for lamp in lamps {
+                let length = (lamp.x * lamp.x + lamp.y * lamp.y
+                              + lamp.z * lamp.z).squareRoot()
+                let cosine = (direction.0 * lamp.x + direction.1 * lamp.y
+                              + direction.2 * lamp.z) / length
+                // A surface only receives a lamp it faces, which is what makes
+                // a sparse rig directional.
+                if cosine > 0 { irradiance += cosine }
+            }
+            lowest = Swift.min(lowest, irradiance)
+            highest = Swift.max(highest, irradiance)
+        }
+        guard lowest > 0 else { return Double.greatestFiniteMagnitude }
+        return highest / lowest
+    }
 
     /// How much light comes from every direction at once, as the surrounding
     /// light image's intensity.
     ///
     /// This is also the ambient floor, and it is deliberately the *only* place
-    /// the floor comes from.  Setting ``ambient`` on each of the six lamps was
-    /// the first attempt and is a trap: SceneKit sums ambient contributions
-    /// across lights, so six lamps at 0.45 would deliver 2.7 and blow the model
-    /// out to white.  A single uniform light image has one well-defined
-    /// intensity instead, and being uniform it lifts a crevice that no lamp can
-    /// reach without making any direction brighter than another.
+    /// the floor comes from.  Setting ``ambient`` on each lamp was the first
+    /// attempt and is a trap: SceneKit sums ambient contributions across lights,
+    /// so twelve lamps at 0.45 would deliver 5.4 and blow the model out to
+    /// white.  A single uniform light image has one well-defined intensity
+    /// instead, and being uniform it lifts a crevice that no lamp can reach
+    /// without making any direction brighter than another.
     ///
-    /// It is what keeps the low end of the ramp readable: a crevice between two
-    /// atoms is shadowed from every lamp at once, and those vertices used to
-    /// come out black, which swallowed the blue end of the ramp.
-    static let environmentIntensity: Double = 0.7
+    /// It carries most of the light here, with the lamps shaping the form.  The
+    /// environment term is perfectly even, so leaning on it is what flattens the
+    /// rig's residual directionality: the lamps only have to give the atoms and
+    /// the cloud enough shading to read as solid, not to light them.
+    static let environmentIntensity: Double = 1.0
+
+    /// Whether a translucent overlay writes depth, for the orbital envelope and
+    /// the density cloud.
+    ///
+    /// Both are **false**, and they must stay equal.  The density cloud used to
+    /// write depth on the theory that a closed surface should hide its own far
+    /// wall; what it actually hid was the molecule, because the cloud's near wall
+    /// fills the depth buffer and every atom behind it is culled before it is
+    /// drawn.  The screen then showed the cloud over the background with no
+    /// molecule under it, which is why the transparency slider had nothing to
+    /// reveal and felt dead.  Apple's guidance agrees: "Typically, you disable
+    /// writing to the depth buffer when rendering semitransparent objects."
+    ///
+    /// The far wall stays out of the picture through back-face culling instead:
+    /// the engine orients every triangle outward and ``isDoubleSided`` is false,
+    /// so the far wall is discarded before it can blend and the veil over the
+    /// atoms is exactly one layer.
+    ///
+    /// Stated here rather than inline in the renderer so the layout tests can
+    /// hold the two overlays to the same behaviour; the renderer itself needs
+    /// SceneKit, which cannot run on the build host.
+    static let orbitalWritesDepth = false
+    static let cloudWritesDepth = false
 
     /// Mid-grey the light image is built from, and how far the six cube faces
     /// vary around it.

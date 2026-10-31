@@ -305,7 +305,6 @@ do {
         var coolest = 1.0
         for index in stride(from: 0, to: mesh.colourData.count, by: 3) {
             let r = Double(mesh.colourData[index])
-            let g = Double(mesh.colourData[index + 1])
             let b = Double(mesh.colourData[index + 2])
             // Redness: red high, blue low.  A proxy for the ramp position that
             // does not need the mesh to hand back the density.
@@ -321,18 +320,41 @@ print("the light rig lights the model from every side")
 do {
     // The rig has to be omnidirectional: a directional rig leaves the far side
     // of the cloud in shadow, and the colours there read as black, so part of
-    // the ramp is invisible.  A rig that is symmetric through the origin has a
-    // direction sum of zero, which is the property that makes it omnidirectional
-    // rather than merely bright.
+    // the ramp is invisible.
+    //
+    // The first two rigs were checked by summing the lamp directions, and the
+    // six-lamp ring passed that at exactly zero while still being badly
+    // directional -- a lamp on each axis leaves the diagonals lit by three lamps
+    // against the axis's one.  The number that actually matters is the spread of
+    // irradiance over directions on the sphere, so that is what is measured.
     let lamps = MoleculeLayout.lamps
-    expect(lamps.count >= 4, "there are several lamps (\(lamps.count))")
+    expect(lamps.count >= 8, "there are several lamps (\(lamps.count))")
 
-    let sum = lamps.reduce((x: 0.0, y: 0.0, z: 0.0)) {
-        (x: $0.x + $1.x, y: $0.y + $1.y, z: $0.z + $1.z)
-    }
-    let magnitude = (sum.x * sum.x + sum.y * sum.y + sum.z * sum.z).squareRoot()
-    expect(magnitude < 1e-9,
-           "the lamps cancel through the origin, so no direction dominates (\(magnitude))")
+    let spread = MoleculeLayout.irradianceSpread()
+    // The six-axis ring scored 1.71 here and looked directional on the device.
+    // The icosahedron scores about 1.17.  The bound is set below the ring so a
+    // regression to an axis-aligned rig fails rather than passes.
+    expect(spread < 1.35,
+           "the light is even in every direction (brightest/dimmest \(spread))")
+    expect(spread >= 1.0, "the spread is a ratio of at least one (\(spread))")
+
+    // Demonstrate that the threshold above actually discriminates, by measuring
+    // the rig it replaced with the same code.  The six-axis ring is symmetric
+    // through the origin -- its direction sum is exactly zero, which is why it
+    // was believed to be omnidirectional -- but it scores well over the bound.
+    // Without this, a future edit could loosen the metric until it passed
+    // anything, and nothing would say so.
+    let rejected = [
+        MoleculeLayout.Lamp(x: 1, y: 0, z: 0, intensity: 1),
+        MoleculeLayout.Lamp(x: -1, y: 0, z: 0, intensity: 1),
+        MoleculeLayout.Lamp(x: 0, y: 1, z: 0, intensity: 1),
+        MoleculeLayout.Lamp(x: 0, y: -1, z: 0, intensity: 1),
+        MoleculeLayout.Lamp(x: 0, y: 0, z: 1, intensity: 1),
+        MoleculeLayout.Lamp(x: 0, y: 0, z: -1, intensity: 1),
+    ]
+    let rejectedSpread = MoleculeLayout.irradianceSpread(lamps: rejected)
+    expect(rejectedSpread > 1.35,
+           "the metric rejects the axis-aligned rig it replaced (\(rejectedSpread))")
 
     // Every lamp the same brightness, or the brightest one becomes a key light
     // and the rig is directional again.
@@ -345,25 +367,20 @@ do {
     expect(radii.allSatisfy { abs($0 - 1.0) < 1e-9 },
            "every lamp is on the unit sphere (\(Set(radii)))")
 
-    // A ring with a lamp on every axis, so the six faces of the model each get
-    // a lamp rather than the light favouring one plane.
+    // No lamp may sit on an axis with the others' directions empty, which is the
+    // shape of the rig that measured 1.71.
     let components = lamps.map { [$0.x, $0.y, $0.z] }
-    for axis in 0..<3 {
-        let others = (0..<3).filter { $0 != axis }
-        let aligned = components.filter { vector in
-            others.allSatisfy { abs(vector[$0]) < 1e-9 }
-        }
-        expect(aligned.contains { $0[axis] > 0.5 },
-               "axis \(axis) has a lamp on its positive side")
-        expect(aligned.contains { $0[axis] < -0.5 },
-               "axis \(axis) has a lamp on its negative side")
+    let onAnAxis = components.filter { vector in
+        vector.filter { abs($0) > 1e-9 }.count == 1
     }
+    expect(onAnAxis.count == 0,
+           "no lamp is axis-aligned, so no axis is a special direction "
+           + "(\(onAnAxis.count) were)")
 
-    // The ambient floor is what keeps a crevice between two atoms, which no lamp
-    // can reach, from going black.  It must come from the surrounding light
-    // image rather than from `ambient` on the lamps: SceneKit sums ambient
-    // across lights, so a floor set on six of them would be delivered six times
-    // over and blow the model out to white.
+    // The fill must come from the surrounding light image rather than from
+    // `ambient` on the lamps: SceneKit sums ambient across lights, so a floor
+    // set on twelve of them would be delivered twelve times over and blow the
+    // model out to white.
     expect(MoleculeLayout.environmentIntensity >= 0.3,
            "the omnidirectional fill is substantial (\(MoleculeLayout.environmentIntensity))")
     expect(MoleculeLayout.environmentIntensity <= 1.0,
@@ -381,12 +398,23 @@ do {
            "the cloud's material is diffuse, not glossy (\(MoleculeLayout.cloudRoughness))")
 }
 
-print("the cloud does not veil the molecule it encloses")
+print("the cloud does not hide the molecule it encloses")
 do {
-    // The density surface closes around the whole molecule, so every atom is
-    // behind its near wall and the veil applies at full strength.  At the old
-    // default of 0.55 the atoms were half-covered and the screen read as "the
-    // molecule is hidden", which is what the user reported.
+    // The density surface closes around the whole molecule, so every atom sits
+    // behind its near wall.  The material must NOT write depth: with the write
+    // on, the cloud's near wall fills the depth buffer and every atom behind it
+    // is culled, so the molecule is never drawn and no transparency value can
+    // reveal it -- which is exactly what the user saw, the molecule hidden and
+    // the slider doing nothing.
+    //
+    // The material is built in MoleculeView, which needs SceneKit and so cannot
+    // run here.  What can be checked is that the constant the renderer must
+    // respect is stated where the layout rules live, so the two cannot drift.
+    expect(MoleculeLayout.cloudWritesDepth == false,
+           "the cloud does not write depth, so the atoms behind it are drawn")
+
+    // The default must be transparent enough to see the atoms through.  At 0.55
+    // they were half-veiled and the screen read as "the molecule is hidden".
     expect(MoleculeLayout.defaultDensityOpacity < 0.4,
            "the cloud opens transparent enough to see the atoms through "
            + "(\(MoleculeLayout.defaultDensityOpacity))")
@@ -398,16 +426,15 @@ do {
     expect(MoleculeLayout.minimumDensityOpacity > 0.0,
            "the floor leaves the surface visible as a shape")
 
-    // The slider must have real travel, or "adjusting" it does nothing -- which
-    // is what the user suspected.
+    // The slider must have real travel, or "adjusting" it does nothing.
     let travel = MoleculeLayout.maximumDensityOpacity - MoleculeLayout.minimumDensityOpacity
     expect(travel > 0.5, "the slider has real travel (\(travel))")
 
-    // The density veil is drawn through one layer only (the near wall), so it
-    // can afford to be fainter than the orbital envelope, which is a set of
-    // overlapping walls.
-    expect(MoleculeLayout.defaultDensityOpacity <= MoleculeLayout.defaultOrbitalOpacity,
-           "the enclosing cloud is no more opaque than the orbital envelope")
+    // The orbital envelope's slider has always worked, so the density cloud
+    // must be drawn the same way: same depth behaviour, same blend.  If these
+    // ever diverge again, one of the two sliders goes dead.
+    expect(MoleculeLayout.cloudWritesDepth == MoleculeLayout.orbitalWritesDepth,
+           "the cloud is drawn like the orbital envelope, whose slider works")
 }
 
 print("")
