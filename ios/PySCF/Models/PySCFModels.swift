@@ -1074,6 +1074,9 @@ struct DensityAtom: Identifiable, Hashable {
     var element: String
     /// Hex string such as ``#ff0d0d``.
     var colorHex: String
+    /// The electron density at this atom's own nucleus, in electrons per cubic
+    /// Bohr, from this atom's electrons alone.
+    var nucleusDensity: Double
 
     var id: Int { index }
 
@@ -1081,17 +1084,19 @@ struct DensityAtom: Identifiable, Hashable {
         index = json.integer("index") ?? 0
         element = json.value("element") as String? ?? "?"
         colorHex = json.value("color") as String? ?? "#808080"
+        nucleusDensity = json.number("nucleusDensity") ?? 0
     }
 }
 
-/// The total electron density as one surface, coloured by which atom's
-/// electrons dominate the density at each point.
+/// The total electron density as one surface, coloured by the density each
+/// atom contributes at its own nucleus.
 ///
 /// The picture is a single closed surface wrapping the molecule, not a set of
-/// nested shells.  Every vertex carries the atom it belongs to and that atom's
-/// share of the local density, so the renderer colours the surface without
-/// knowing anything about the chemistry, and two atoms sharing a region can be
-/// blended rather than split.
+/// nested shells.  Every vertex carries the density it is coloured by, already
+/// blended from the atoms' nuclear densities, so the renderer colours the
+/// surface without knowing anything about the chemistry; ``densityRange`` is
+/// the span of those values on this surface, which is what the ramp is scaled
+/// to.
 struct DensitySurface {
     var method: String
     var energy: Double
@@ -1116,10 +1121,12 @@ struct DensitySurface {
     var atoms: [DensityAtom]
     /// The mesh, in absolute ångström.
     var mesh: OrbitalPhase
-    /// One entry per vertex: the index into ``atoms`` that dominates there, and
-    /// that atom's share of the local density (0 to 1).
-    var atomIndex: [Int]
-    var atomShare: [Double]
+    /// One entry per vertex: the density that vertex is coloured by, in
+    /// electrons per cubic Bohr, blended from the atoms' nuclear densities.
+    var vertexDensity: [Double]
+    /// The lowest and highest vertex density on this surface, ``[low, high]``,
+    /// which the ramp is scaled to.
+    var densityRange: [Double]
 
     init(_ json: JSONObject) {
         method = json.value("method") ?? ""
@@ -1136,42 +1143,39 @@ struct DensitySurface {
         clipped = json.value("clipped") as Bool? ?? false
         atoms = json.objects("atoms").map(DensityAtom.init)
         mesh = OrbitalPhase(json)
-        atomIndex = json.integers("atomIndex")
-        atomShare = json.doubles("atomShare")
+        vertexDensity = json.doubles("vertexDensity")
+        densityRange = json.doubles("densityRange")
     }
 
     var triangleCount: Int { mesh.triangleCount }
     var hasGeometry: Bool { !mesh.isEmpty }
 
-    /// The atom dominating vertex ``index``, or nil when the attribution does
-    /// not cover it.
+    /// The density vertex ``index`` is coloured by, or nil when the payload
+    /// does not cover it.
     ///
-    /// Guarded rather than indexed directly: the two arrays come from the same
-    /// payload as the mesh, and a truncated one must degrade to the default
-    /// colour instead of reading out of bounds.
-    func atom(at vertex: Int) -> DensityAtom? {
-        guard vertex >= 0, vertex < atomIndex.count else { return nil }
-        let index = atomIndex[vertex]
-        guard index >= 0, index < atoms.count else { return nil }
-        return atoms[index]
+    /// Guarded rather than indexed directly: the array comes from the same
+    /// payload as the mesh, and a truncated one must degrade to the ramp's cool
+    /// end instead of reading out of bounds.
+    func density(at vertex: Int) -> Double? {
+        guard vertex >= 0, vertex < vertexDensity.count else { return nil }
+        return vertexDensity[vertex]
     }
 
-    /// That atom's share of the density at vertex ``index``, 0 when unknown.
-    func share(at vertex: Int) -> Double {
-        guard vertex >= 0, vertex < atomShare.count else { return 0 }
-        return atomShare[vertex]
+    /// The ramp position for vertex ``index``, 0 at the densest end.
+    ///
+    /// Scaled to this surface's own range, so the contrast the ramp shows is
+    /// the one between the atoms of this molecule.  A vertex the payload does
+    /// not reach takes the cool end, matching the missing-data behaviour of the
+    /// rest of the model.
+    func rampPosition(at vertex: Int) -> Double {
+        guard let value = density(at: vertex), densityRange.count == 2 else { return 1 }
+        return DensityPalette.position(of: value, low: densityRange[0], high: densityRange[1])
     }
 
-    /// How many vertices each atom dominates, for the legend.
-    ///
-    /// Counted from the attribution rather than stored, so the legend cannot
-    /// disagree with the colours on the surface.
-    var vertexCounts: [Int: Int] {
-        var counts: [Int: Int] = [:]
-        for index in atomIndex where index >= 0 && index < atoms.count {
-            counts[index, default: 0] += 1
-        }
-        return counts
+    /// The atoms ordered by how much density they carry at their nucleus,
+    /// densest first, for the legend.
+    var atomsByNuclearDensity: [DensityAtom] {
+        atoms.sorted { $0.nucleusDensity > $1.nucleusDensity }
     }
 }
 

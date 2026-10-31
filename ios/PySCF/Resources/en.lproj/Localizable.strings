@@ -49,7 +49,7 @@
 "common.done" = "Done";
 "common.no" = "no";
 "common.yes" = "yes";
-"density.blurb" = "The molecule with its electron density drawn around it as one surface of constant density. The surface is coloured by atom: each region takes the colour of the atom whose electrons dominate the density there, so the picture shows where the density is and whose it is.";
+"density.blurb" = "The molecule with its electron density drawn around it as one translucent surface of constant density. The surface is coloured by density, red for the densest region through orange, yellow and green to blue for the most diffuse, so the picture shows how much density the molecule carries over each part of it.";
 "density.clipped" = "The surface is cut off by the sampling box — it reaches further than the grid could hold, so the edge you see is the box wall rather than the cloud’s real boundary.";
 "density.cube" = "Cube";
 "density.detail" = "Detail";
@@ -59,12 +59,13 @@
 "density.detail.contour" = "Contour %.4f e/bohr³.";
 "density.empty" = "Run a calculation first, then open this screen to see the density cloud.";
 "density.emptySurface" = "No surface reached this contour. The molecule’s density never rises to the level asked for, so there is nothing to draw.";
-"density.legend" = "Atoms, by share of the surface";
-"density.legend.vertices" = "%d vertices";
-"density.levels" = "Contour";
+"density.legend" = "Density at each nucleus";
+"density.legend.high" = "High";
+"density.legend.low" = "Low";
+"density.contour" = "Contour";
 "density.loading" = "Building the density surface…";
 "density.method" = "Reference";
-"density.note" = "The contour is an absolute density in electrons per cubic Bohr, so the same value means the same density on any molecule. The peak is the largest value on the sampled grid, which is well below the density at a nucleus: the cusp there is far too sharp for a grid of this spacing to resolve.";
+"density.note" = "The contour is an absolute density in electrons per cubic Bohr, so the same value means the same density on any molecule. The colour is the density each atom carries at its own nucleus, which is where the density is greatest and differs most between atoms; the surface itself sits at one contour, so its colour varies with the atom below rather than with position along it.";
 "density.noCube" = "No density cube available — enable “Density cube” and run a calculation.";
 "density.origin" = "Origin";
 "density.peak" = "Peak density";

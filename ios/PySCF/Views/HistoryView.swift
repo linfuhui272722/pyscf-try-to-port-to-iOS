@@ -405,12 +405,14 @@ struct HistoryViewerView: View {
         }
         if let cloud = cloud {
             MetricRow(label: L("density.method"), value: cloud.method)
-            MetricRow(label: L("density.levels"),
+            MetricRow(label: L("density.contour"),
                       value: String(format: "%.4f e/bohr³", cloud.level))
             MetricRow(label: L("density.surface"),
                       value: LF("density.surfaceDetail", cloud.triangleCount))
             MetricRow(label: L("density.legend"),
-                      value: cloud.atoms.map { $0.element }.joined(separator: ", "))
+                      value: cloud.atomsByNuclearDensity
+                          .map { String(format: "%@ %.3g", $0.element, $0.nucleusDensity) }
+                          .joined(separator: ", "))
         }
     }
 

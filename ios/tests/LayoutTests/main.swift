@@ -149,10 +149,10 @@ do {
 
 print("density surface")
 do {
-    // The density picture is one closed surface at a single contour, coloured
-    // by which atom dominates each vertex.  Both halves are silent on a device:
-    // a surface at the wrong contour still draws, and an attribution mapped to
-    // the wrong colour still draws -- it just carries no information.
+    // The density picture is one closed surface at a single contour, coloured by
+    // the density each atom carries at its own nucleus.  Both halves are silent
+    // on a device: a surface at the wrong contour still draws, and a density
+    // mapped to the wrong colour still draws -- it just carries no information.
     let surface = DensitySurface(fixture("density_surface"))
 
     expect(surface.hasGeometry, "the surface has geometry")
@@ -161,36 +161,43 @@ do {
     expect(surface.level < surface.peak, "the contour is below the peak")
     expect(surface.triangleCount > 0, "the surface has triangles (\(surface.triangleCount))")
 
-    // The attribution has to cover the mesh. The renderer indexes these arrays
-    // per vertex, so a short one would colour the tail with the fallback.
+    // The colouring has to cover the mesh. The renderer indexes the density per
+    // vertex, so a short array would colour the tail with the cool end.
     let vertexCount = surface.mesh.vertices.count
     expect(vertexCount > 0, "the mesh has vertices (\(vertexCount))")
-    expect(surface.atomIndex.count == vertexCount,
-           "one atom index per vertex (\(surface.atomIndex.count) vs \(vertexCount))")
-    expect(surface.atomShare.count == vertexCount,
-           "one share per vertex (\(surface.atomShare.count) vs \(vertexCount))")
+    expect(surface.vertexDensity.count == vertexCount,
+           "one density per vertex (\(surface.vertexDensity.count) vs \(vertexCount))")
     expect(surface.atoms.count == 3, "water has three atoms (\(surface.atoms.count))")
 
-    // Every index must be in range, or the lookup traps on the device.
-    let inRange = surface.atomIndex.allSatisfy { $0 >= 0 && $0 < surface.atoms.count }
-    expect(inRange, "every atom index is in range")
+    // The range is what the ramp is scaled to, so it must bracket the values.
+    expect(surface.densityRange.count == 2, "the range has two ends")
+    if surface.densityRange.count == 2 {
+        let low = surface.densityRange[0]
+        let high = surface.densityRange[1]
+        expect(low > 0, "the low end is positive (\(low))")
+        expect(high >= low, "the range is ordered (\(low) ... \(high))")
+        expect(surface.vertexDensity.allSatisfy { $0 >= low - 1e-6 && $0 <= high + 1e-6 },
+               "every vertex density lies inside the range")
+    }
 
-    // Every atom of water owns some of the surface: the whole point of the
+    // Oxygen's nucleus is far denser than hydrogen's: the whole point of the
     // colouring is that the atoms are told apart.
-    let owners = Set(surface.atomIndex)
-    expect(owners == Set(0..<surface.atoms.count),
-           "every atom owns part of the surface (owners \(owners.sorted()))")
-
-    // The per-atom counts the legend shows must agree with the attribution.
-    let counts = surface.vertexCounts
-    expect(counts.values.reduce(0, +) == vertexCount,
-           "the legend counts cover the mesh (\(counts.values.reduce(0, +)) vs \(vertexCount))")
-    expect(counts.keys.allSatisfy { owners.contains($0) },
-           "the legend only lists atoms that own surface")
-
-    // The engine's CPK palette reaches the model, so the surface and the
-    // ball-and-stick atoms agree about which colour means which element.
     let oxygen = surface.atoms.first { $0.element == "O" }
+    let hydrogen = surface.atoms.first { $0.element == "H" }
+    expect(oxygen != nil && hydrogen != nil, "water has O and H")
+    if let oxygen = oxygen, let hydrogen = hydrogen {
+        expect(oxygen.nucleusDensity > hydrogen.nucleusDensity * 10,
+               "oxygen out-carries hydrogen (\(oxygen.nucleusDensity) vs \(hydrogen.nucleusDensity))")
+    }
+
+    // The legend orders the atoms densest first, so the red end is explained
+    // first; and the CPK palette still reaches the model, so the legend and the
+    // ball-and-stick atoms agree about which colour means which element.
+    let ordered = surface.atomsByNuclearDensity
+    expect(ordered.count == surface.atoms.count, "the legend lists every atom")
+    let descending = zip(ordered, ordered.dropFirst())
+        .allSatisfy { $0.nucleusDensity >= $1.nucleusDensity }
+    expect(descending, "the legend is ordered densest first")
     expect(oxygen?.colorHex == "#FF0D0D", "oxygen carries the CPK colour (\(oxygen?.colorHex ?? "nil"))")
 
     // Framing: the cloud reaches past the atoms, so it must take part in the
@@ -232,49 +239,81 @@ do {
 
 print("density colours")
 do {
-    // The colour is per atom, from the engine's CPK palette.  A wrong mapping
-    // still renders a plausible picture in the wrong colours, so it is pinned
-    // here rather than eyeballed on a device.
-    let oxygen = DensityPalette.parse("#FF0D0D")
-    expect(abs(oxygen.red - 1.0) < 1e-6, "oxygen parses to red (\(oxygen.red))")
-    expect(oxygen.green < 0.1 && oxygen.blue < 0.1, "oxygen has no green or blue")
+    // The colour is a position on the red-to-blue ramp, taken from the density
+    // in the logarithm.  A wrong ramp still renders a plausible picture in the
+    // wrong colours, so it is pinned here rather than eyeballed on a device.
 
-    let white = DensityPalette.parse("#FFFFFF")
-    expect(abs(white.red - 1) < 1e-6 && abs(white.green - 1) < 1e-6 && abs(white.blue - 1) < 1e-6,
-           "hydrogen parses to white")
+    // The ends of the ramp are the named colours, so a change to the stops that
+    // broke the meaning would fail here.
+    let red = DensityPalette.colour(at: 0.0)
+    expect(red.red > 0.5 && red.green < 0.1 && red.blue < 0.1,
+           "the dense end is red (\(red))")
+    let blue = DensityPalette.colour(at: 1.0)
+    expect(blue.blue > 0.7 && blue.red < 0.2 && blue.green < 0.4,
+           "the diffuse end is blue (\(blue))")
 
-    // A malformed hex string degrades to the fallback rather than to black, so
-    // a bad payload looks unattributed rather than deliberate.
-    for bad in ["", "#12", "zzzzzz", "#GGGGGG", "#1234567"] {
-        let colour = DensityPalette.parse(bad)
-        expect(abs(colour.red - DensityPalette.fallback.red) < 1e-9,
-               "a bad hex string '\(bad)' falls back")
-    }
+    // The named colours in between, in order, so the ramp reads red -> orange ->
+    // yellow -> green -> blue and not some other rainbow.
+    let orange = DensityPalette.colour(at: 0.25)
+    expect(orange.red > 0.8 && orange.green > 0.2 && orange.green < 0.5 && orange.blue < 0.1,
+           "a quarter in is orange (\(orange))")
+    let yellow = DensityPalette.colour(at: 0.5)
+    expect(yellow.red > 0.8 && yellow.green > 0.7 && yellow.blue < 0.2,
+           "the middle is yellow (\(yellow))")
+    let green = DensityPalette.colour(at: 0.75)
+    expect(green.green > 0.6 && green.red < 0.4 && green.blue < 0.4,
+           "three quarters in is green (\(green))")
 
-    // A share of one leaves the atom's own colour untouched: the vertex is
-    // entirely that atom's.
-    let full = DensityPalette.colour(forAtom: oxygen, share: 1.0)
-    expect(abs(full.red - oxygen.red) < 1e-9
-           && abs(full.green - oxygen.green) < 1e-9
-           && abs(full.blue - oxygen.blue) < 1e-9,
-           "a full share leaves the colour untouched")
-
-    // A lower share mixes toward the neutral tone, but only shallowly: the
-    // atom's colour must still dominate, or every atom would wash to grey.
-    let shared = DensityPalette.colour(forAtom: oxygen, share: 0.5)
-    expect(shared.red < oxygen.red, "a shared vertex is mixed down (\(shared.red))")
-    expect(shared.red > DensityPalette.fallback.red,
-           "but stays nearer the atom than the fallback (\(shared.red))")
-    expect(shared.green > oxygen.green, "and gains some of the neutral tone")
-
-    // Out-of-range and non-finite shares must still yield a usable colour:
-    // these come from the payload and are handed straight to SceneKit.
-    for share in [-1.0, 2.0, Double.nan, Double.infinity] {
-        let colour = DensityPalette.colour(forAtom: oxygen, share: share)
+    // Every component stays a colour, including off the ends and for a
+    // non-finite position: these come from the payload and go to SceneKit.
+    for position in [-1.0, 2.0, Double.nan, Double.infinity] {
+        let colour = DensityPalette.colour(at: position)
         expect(colour.red >= 0 && colour.red <= 1
                && colour.green >= 0 && colour.green <= 1
                && colour.blue >= 0 && colour.blue <= 1,
-               "share \(share) yields an in-range colour")
+               "position \(position) yields an in-range colour")
+    }
+
+    // The mapping is logarithmic, and the densest value lands at the red end.
+    expect(abs(DensityPalette.position(of: 100, low: 0.1, high: 100)) < 1e-9,
+           "the densest value is at the red end")
+    expect(abs(DensityPalette.position(of: 0.1, low: 0.1, high: 100) - 1) < 1e-9,
+           "the emptiest value is at the blue end")
+    // The geometric mean sits halfway on a log scale; a linear mapping would
+    // put it near the red end and lose the contrast the ramp exists to show.
+    let geometric = (0.1 * 100.0).squareRoot()
+    expect(abs(DensityPalette.position(of: geometric, low: 0.1, high: 100) - 0.5) < 1e-9,
+           "the geometric mean sits halfway")
+
+    // A degenerate or reversed range, or a non-positive density, collapses to
+    // the dense end rather than dividing by zero or going out of range.
+    for position in [DensityPalette.position(of: 1, low: 1, high: 1),
+                     DensityPalette.position(of: 1, low: 100, high: 0.1),
+                     DensityPalette.position(of: 0, low: 0.1, high: 100),
+                     DensityPalette.position(of: -1, low: 0.1, high: 100)] {
+        expect(position >= 0 && position <= 1, "a degenerate input stays on the ramp (\(position))")
+    }
+
+    // The mesh colours each vertex from the ramp, so a vertex over oxygen comes
+    // out hotter than one over hydrogen.  This is the end-to-end statement of
+    // what the picture shows.
+    let surface = DensitySurface(fixture("density_surface"))
+    let mesh = DensityMesh(surface: surface, centredOn: [0, 0, 0])
+    expect(mesh != nil, "the surface builds a mesh")
+    if let mesh = mesh {
+        var hottest = 0.0
+        var coolest = 1.0
+        for index in stride(from: 0, to: mesh.colourData.count, by: 3) {
+            let r = Double(mesh.colourData[index])
+            let g = Double(mesh.colourData[index + 1])
+            let b = Double(mesh.colourData[index + 2])
+            // Redness: red high, blue low.  A proxy for the ramp position that
+            // does not need the mesh to hand back the density.
+            hottest = max(hottest, r - b)
+            coolest = min(coolest, r - b)
+        }
+        expect(hottest - coolest > 0.3,
+               "the surface spans the ramp (\(hottest) vs \(coolest))")
     }
 }
 

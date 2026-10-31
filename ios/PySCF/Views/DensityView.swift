@@ -1,13 +1,17 @@
 // DensityView.swift
 //
 // The Density screen: the molecule in 3D with its electron density drawn around
-// it as one closed surface, coloured by which atom dominates each point on it.
+// it as one translucent closed surface, coloured by the density the molecule
+// carries at each atom's position.
 //
 // This is the same picture the orbital viewer draws -- a translucent envelope
 // over the ball-and-stick model -- but for the total density rather than a
 // single orbital.  The density is a positive field, so there are no two phases
-// to colour; what it has instead is an owner at every point, and the colour says
-// which atom's electrons dominate the density there.
+// to colour.  The surface sits at one contour, so the density on it is the same
+// everywhere and cannot be the quantity shown; what varies across it is which
+// atom the density belongs to, and the colour is the density at that atom's own
+// nucleus, blended smoothly between neighbouring atoms.  The ramp runs red
+// (densest) through orange, yellow and green to blue (most diffuse).
 //
 // The meshes come from ``PySCFEngine/densitySurface`` on demand rather than
 // riding along with the run, so a run that never opens this screen never pays
@@ -86,11 +90,12 @@ struct DensitySliceView: View {
 
     /// Maps a normalised intensity to an RGB tuple, through a heat ramp.
     ///
-    /// The slice draws the *value* of the density across a plane, which is a
-    /// different question from the 3D surface's "whose electrons are these", so
-    /// it carries its own ramp rather than sharing the atom colours.  The ramp
-    /// runs dark at zero because the slice draws the whole plane including the
-    /// empty space between molecules, which the surface never shows.
+    /// The slice draws the *value* of the density across a plane, and the
+    /// surface draws which atom the density belongs to; the two questions are
+    /// different, so the slice carries its own ramp rather than sharing the
+    /// surface's.  The slice runs dark at zero because it draws the whole plane
+    /// including the empty space between molecules, which the surface never
+    /// shows.
     static func colour(for intensity: Double) -> (UInt8, UInt8, UInt8, UInt8) {
         let value = min(max(intensity, 0), 1)
         if value <= 0.001 { return (2, 2, 12, 255) }
@@ -285,7 +290,7 @@ struct DensityScreen: View {
                 label: L("density.peak"),
                 value: String(format: "%.4f e/bohr³", surface.peak))
             MetricRow(
-                label: L("density.levels"),
+                label: L("density.contour"),
                 value: String(format: "%.4f e/bohr³", surface.level))
             Text(L("density.note"))
                 .font(.caption)
@@ -293,33 +298,54 @@ struct DensityScreen: View {
         }
     }
 
-    /// The colour key: which element each colour on the surface is.
+    /// The colour key: the ramp, and where each atom of the molecule sits on it.
     ///
-    /// Ordered by how much of the surface the atom dominates, so the atoms that
-    /// matter in the picture come first; a hydrogen buried inside a molecule can
-    /// own no visible surface at all and is left out rather than listed as a
-    /// colour the user will never find.
+    /// A bar rather than a swatch per atom, because the surface's colour is
+    /// continuous: the value shown is the density at each atom's nucleus, and
+    /// the surface carries a gradient between them, so a key that listed only
+    /// flat swatches would misrepresent it.  The atoms are listed densest first
+    /// so the red end is explained first.
     @ViewBuilder
     private var legend: some View {
-        if let surface = model.densitySurface, !surface.atoms.isEmpty {
-            let counts = surface.vertexCounts
-            let shown = surface.atoms
-                .filter { (counts[$0.index] ?? 0) > 0 }
-                .sorted { (counts[$0.index] ?? 0) > (counts[$1.index] ?? 0) }
-            VStack(alignment: .leading, spacing: 6) {
+        if let surface = model.densitySurface, surface.atoms.count > 0,
+           surface.densityRange.count == 2 {
+            let low = surface.densityRange[0]
+            let high = surface.densityRange[1]
+            VStack(alignment: .leading, spacing: 8) {
                 Text(L("density.legend"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(shown) { atom in
+                VStack(alignment: .leading, spacing: 3) {
+                    LinearGradient(
+                        gradient: Gradient(stops: DensityPalette.stops.map { stop in
+                            Gradient.Stop(
+                                color: Color(red: stop.red, green: stop.green, blue: stop.blue),
+                                location: stop.position)
+                        }),
+                        startPoint: .leading,
+                        endPoint: .trailing)
+                    .frame(height: 12)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                    HStack {
+                        Text(L("density.legend.high"))
+                        Spacer(minLength: 8)
+                        Text(L("density.legend.low"))
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                }
+                ForEach(surface.atomsByNuclearDensity) { atom in
                     HStack(spacing: 8) {
-                        let colour = DensityPalette.parse(atom.colorHex)
+                        let position = DensityPalette.position(
+                            of: atom.nucleusDensity, low: low, high: high)
+                        let colour = DensityPalette.colour(at: position)
                         RoundedRectangle(cornerRadius: 3)
                             .fill(Color(red: colour.red, green: colour.green, blue: colour.blue))
                             .frame(width: 22, height: 12)
                         Text(atom.element)
                             .font(.caption.monospacedDigit())
                         Spacer(minLength: 8)
-                        Text(LF("density.legend.vertices", counts[atom.index] ?? 0))
+                        Text(String(format: "%.3g e/bohr³", atom.nucleusDensity))
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }

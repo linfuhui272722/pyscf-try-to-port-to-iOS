@@ -93,9 +93,9 @@ struct OrbitalMeshPair {
 /// The density surface as a SceneKit-ready mesh with a colour per vertex.
 ///
 /// The colours are built here rather than in the renderer so the host test can
-/// check them: the mapping from an atom attribution to a colour is arithmetic,
-/// and a wrong one still renders a perfectly plausible picture in the wrong
-/// colours, which nothing on the device would report.
+/// check them: the mapping from a density to a ramp position to an RGB triple is
+/// arithmetic, and a wrong one still renders a perfectly plausible picture in
+/// the wrong colours, which nothing on the device would report.
 ///
 /// ``vertexData`` is the same interleaved layout ``OrbitalMesh`` uses -- xyz
 /// then the normal, six floats per vertex -- and ``colourData`` is a parallel
@@ -136,15 +136,13 @@ struct DensityMesh {
             data.append(normal.y)
             data.append(normal.z)
 
-            // An unattributed vertex takes the palette's fallback colour, so a
-            // payload whose attribution is short by a few entries still draws
-            // the whole surface rather than dropping the tail.
-            let base = surface.atom(at: index).map { DensityPalette.parse($0.colorHex) }
-                ?? DensityPalette.fallback
-            let mixed = DensityPalette.colour(forAtom: base, share: surface.share(at: index))
-            colours.append(Float(mixed.red))
-            colours.append(Float(mixed.green))
-            colours.append(Float(mixed.blue))
+            // A vertex the payload does not reach takes the cool end of the
+            // ramp, so a truncated payload still draws the whole surface rather
+            // than dropping the tail.
+            let colour = DensityPalette.colour(at: surface.rampPosition(at: index))
+            colours.append(Float(colour.red))
+            colours.append(Float(colour.green))
+            colours.append(Float(colour.blue))
         }
 
         // Same guard as ``OrbitalMesh``: a truncated payload renders the

@@ -1,12 +1,12 @@
 """The electron-density surface the 3D density view draws.
 
 The picture is a single closed surface at one absolute contour of the total
-density, coloured by which atom's electrons dominate the density at each point
-on it.  Both halves of that are silent when they go wrong: a surface drawn at
-the wrong contour still renders as a plausible blob, and an attribution that
-puts every vertex on the wrong atom still renders -- in the wrong colours.  The
-tests therefore pin the mesh to the field it claims to bound, and pin the
-attribution to the density matrix's own atomic blocks, computed independently.
+density, coloured by the density the molecule carries at each atom's position.
+Both halves of that are silent when they go wrong: a surface drawn at the wrong
+contour still renders as a plausible blob, and a colouring that puts every
+vertex on the wrong density still renders -- in the wrong colours.  The tests
+therefore pin the mesh to the field it claims to bound, and pin the colour to
+the density matrix's own atomic blocks, computed independently.
 
 Run with ``python tests/run_tests.py``.
 """
@@ -73,24 +73,18 @@ def _sampled_density_grid(mf, atoms: list[dict], points_per_axis: int):
     return engine._density_values(mf, atoms, points_per_axis, engine._DENSITY_PADDING)
 
 
-def _atomic_contributions(mf, atoms: list[dict], points: np.ndarray) -> np.ndarray:
-    """The density matrix's atomic blocks evaluated at ``points``, independently.
-
-    Re-derives what ``_density_vertex_atoms`` should have produced, from the
-    definition rather than from the helper: ``rho_a(r) = sum_{i,j in a}
-    ao_i(r) D_ij ao_j(r)``, with ``a`` ranging over ``aoslice_by_atom``.  A test
-    that called the helper would only check it against itself.
-    """
+def _nuclear_densities(mf, atoms: list[dict]) -> np.ndarray:
+    """Each atom's own electrons at that atom's own nucleus, independently."""
     ranges = [(int(s), int(e)) for _a, _b, s, e in mf.mol.aoslice_by_atom()]
     dm = np.asarray(mf.make_rdm1(), dtype=float)
     if dm.ndim == 3:
         dm = dm[0] + dm[1]
-    flat = np.asarray(points, dtype=float).reshape(-1, 3) / engine._BOHR_TO_ANGSTROM
-    block = mf.mol.eval_gto("GTOval", flat)
-    out = np.empty((flat.shape[0], len(ranges)), dtype=float)
+    coords = geometry.atoms_to_coords(atoms) / engine._BOHR_TO_ANGSTROM
+    out = np.zeros(len(ranges), dtype=float)
     for index, (first, last) in enumerate(ranges):
-        columns = block[:, first:last]
-        out[:, index] = np.einsum("vi,ij,vj->v", columns, dm[first:last, first:last], columns)
+        ao = mf.mol.eval_gto("GTOval", coords[index:index + 1])[0]
+        column = ao[first:last]
+        out[index] = float(column @ dm[first:last, first:last] @ column)
     return out
 
 
@@ -205,24 +199,31 @@ def test_the_winding_agrees_with_the_outward_normals():
 
 
 # --------------------------------------------------------------------------
-# the attribution, which is what the colour means
+# the colour, which is the density at each atom's own nucleus
 # --------------------------------------------------------------------------
 
 
-def test_one_entry_per_vertex_and_every_index_in_range():
-    """The attribution covers the mesh, so no vertex is left uncoloured."""
+def test_one_density_per_vertex_and_a_range_that_brackets_them():
+    """Every vertex is coloured, and the ramp's range spans the values.
+
+    The Swift side scales the ramp to ``densityRange``, so a range that did not
+    bracket the vertex values would clip the picture at one end and lose the
+    contrast it exists to show.
+    """
     result = _rpc("density_surface", {
         "atoms": BENZENE, "basis": "sto-3g", "method": "RHF", "pointsPerAxis": 28})
     count = len(_vertices(result))
     assert count > 0
-    assert len(result["atomIndex"]) == count
-    assert len(result["atomShare"]) == count
-    assert all(0 <= index < len(result["atoms"]) for index in result["atomIndex"])
-    assert all(0.0 < share <= 1.0 for share in result["atomShare"])
+    values = np.asarray(result["vertexDensity"], dtype=float)
+    assert values.size == count
+    assert np.all(values > 0.0), "a vertex carries no density"
+    low, high = result["densityRange"]
+    assert abs(low - values.min()) < 1e-6
+    assert abs(high - values.max()) < 1e-6
 
 
-def test_the_dominant_atom_is_the_largest_atomic_block():
-    """Each vertex is attributed to the atom with the largest contribution.
+def test_each_atom_carries_the_density_at_its_own_nucleus():
+    """The per-atom figure is that atom's own electrons at its own nucleus.
 
     Recomputed from ``aoslice_by_atom`` and the density matrix, so this checks
     the engine's answer against the definition rather than against itself.
@@ -230,69 +231,125 @@ def test_the_dominant_atom_is_the_largest_atomic_block():
     result = _rpc("density_surface", {
         "atoms": WATER, "basis": "6-31g", "method": "RHF", "pointsPerAxis": 32})
     mf, atoms = _mean_field(WATER)
+    expected = _nuclear_densities(mf, atoms)
+    got = np.asarray([atom["nucleusDensity"] for atom in result["atoms"]], dtype=float)
+    assert np.allclose(got, expected, rtol=1e-6), f"{got} vs {expected}"
+
+
+def test_the_heavy_atom_carries_far_more_density_than_hydrogen():
+    """The colouring is only informative if the atoms really differ.
+
+    Water's oxygen nucleus holds 193 e/bohr^3 against the hydrogens' 0.24, so
+    the ramp has nearly three decades to work with.  If the atoms came out
+    similar the picture would be one flat colour and the ramp pointless.
+    """
+    result = _rpc("density_surface", {
+        "atoms": WATER, "basis": "sto-3g", "method": "RHF", "pointsPerAxis": 24})
+    by_element = {atom["element"]: atom["nucleusDensity"] for atom in result["atoms"]}
+    assert by_element["O"] > 10.0, by_element
+    assert by_element["H"] < 1.0, by_element
+    assert by_element["O"] / by_element["H"] > 100.0, by_element
+
+
+def test_the_vertex_density_is_bounded_by_the_nuclear_densities():
+    """A vertex cannot be denser than the densest nucleus or emptier than the
+    emptiest.
+
+    The blend is a convex combination in the logarithm -- the weights are
+    normalised -- so it lies between the extremes of the atoms it mixes.  A value
+    outside that band would mean the weighting is not normalised, and the ramp
+    would then clip against its ends and flatten the picture.
+    """
+    result = _rpc("density_surface", {
+        "atoms": WATER, "basis": "6-31g", "method": "RHF", "pointsPerAxis": 32})
+    nuclei = [atom["nucleusDensity"] for atom in result["atoms"]]
+    values = np.asarray(result["vertexDensity"], dtype=float)
+    assert values.min() > min(nuclei) * (1 - 1e-6), (values.min(), min(nuclei))
+    assert values.max() < max(nuclei) * (1 + 1e-6), (values.max(), max(nuclei))
+    # The surface sits more than an ångström outside every nucleus at the contour
+    # the app draws, so it never reaches the nuclear densities themselves -- the
+    # oxygen nucleus carries 291 e/bohr^3 and the densest point on water's surface
+    # about 9.  What matters is that it still spans enough of the range for the
+    # ramp to tell the atoms apart: measured, it spans about a factor of ten.
+    low, high = result["densityRange"]
+    assert high / low > 5.0, f"the surface only spans {low} to {high}"
+
+
+def test_a_vertex_on_a_nucleus_takes_that_atoms_density():
+    """The blend is anchored at the atoms: on a nucleus it is that atom's alone.
+
+    The inverse-square weight is unbounded at a nucleus, so a vertex there is
+    dominated by it.  This cannot be checked through the surface, whose vertices
+    sit a ångström or more outside every nucleus at the contour the app draws, so
+    it is checked against the helper with vertices placed on the nuclei
+    themselves -- which is also the statement that the blend has no bias: with
+    the weight unbounded, the other atoms drop out entirely.
+    """
+    mf, atoms = _mean_field(WATER)
+    coords = geometry.atoms_to_coords(atoms)
+    colours = engine._density_vertex_colours(mf, atoms, coords)
+    expected = _nuclear_densities(mf, atoms)
+    got = np.asarray(colours["vertexDensity"], dtype=float)
+    assert np.allclose(got, expected, rtol=1e-3), f"{got} vs {expected}"
+
+
+def test_the_colour_is_continuous_across_the_surface():
+    """Neighbouring vertices carry neighbouring colours.
+
+    This is what makes the surface a gradient rather than a map of hard-edged
+    atom regions.  The measure is the jump along the *ramp*, because that is what
+    the eye sees: a blend can be smooth in the density and still band if the ramp
+    is steep there.  The first attempt at this -- weighting by the atomic blocks'
+    share of the local density -- measured a worst jump of 0.71 and a 99th
+    percentile of 0.55 along the ramp, which is a hard edge at most bond
+    midpoints.  Distance weighting measures 0.17 and 0.13.
+    """
+    result = _rpc("density_surface", {
+        "atoms": WATER, "basis": "6-31g", "method": "RHF", "pointsPerAxis": 32})
     vertices = _vertices(result)
-    contributions = _atomic_contributions(mf, atoms, vertices)
+    indices = np.asarray(result["indices"], dtype=int).reshape(-1, 3)
+    values = np.asarray(result["vertexDensity"], dtype=float)
+    low, high = result["densityRange"]
+    log_low, log_high = np.log(low), np.log(high)
+    position = np.clip((log_high - np.log(values)) / (log_high - log_low), 0.0, 1.0)
 
-    expected = np.argmax(contributions, axis=1)
-    assert list(expected) == result["atomIndex"]
+    # Vertices sit one grid step apart, so a short edge is one of the marching
+    # step's own; the colour must not jump across it.
+    edge = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]], indices[:, [2, 0]]])
+    length = np.linalg.norm(vertices[edge[:, 0]] - vertices[edge[:, 1]], axis=1)
+    near = length < 1.5 * result["gridStep"]
+    assert near.sum() > 100, f"only {int(near.sum())} short edges to check"
+    jump = np.abs(position[edge[near, 0]] - position[edge[near, 1]])
+    worst = float(jump.max())
+    assert worst < 0.3, f"a jump of {worst:.2f} along the ramp across one grid step"
+    assert float(np.percentile(jump, 99)) < 0.2, (
+        f"the 99th percentile jump is {float(np.percentile(jump, 99)):.2f}")
 
-    totals = contributions.sum(axis=1)
-    share = contributions[np.arange(len(vertices)), expected] / totals
-    assert np.allclose(share, result["atomShare"], atol=1e-3)
 
+def test_a_single_atom_colours_the_whole_surface_its_own_density():
+    """With one atom there is nothing to blend, so every vertex is its density.
 
-def test_a_single_atom_owns_the_whole_surface():
-    """With one atom there is nothing to share with, so it is the sole owner.
-
-    This is the cleanest statement of what the attribution means: a helium
-    atom's density is entirely its own, so every vertex is atom 0 with a share
-    of one.
+    This is the cleanest statement of what the colour means: a helium atom's
+    surface carries helium's nuclear density and nothing else, so the surface
+    is one flat colour.
     """
     result = _rpc("density_surface", {
         "atoms": HELIUM, "basis": "sto-3g", "method": "RHF", "pointsPerAxis": 24})
     assert len(result["atoms"]) == 1
     assert result["atoms"][0]["element"] == "He"
-    assert result["atomIndex"] == [0] * len(_vertices(result))
-    assert all(abs(share - 1.0) < 1e-6 for share in result["atomShare"])
-
-
-def test_every_atom_of_water_owns_part_of_the_surface():
-    """Oxygen and both hydrogens each dominate a region of the picture.
-
-    The point of colouring by atom is that the atoms are told apart, so if a
-    hydrogen owned no part of the surface the colouring would be pointless for
-    it.  At the default contour each atom of water does own a region.
-    """
-    result = _rpc("density_surface", {
-        "atoms": WATER, "basis": "6-31g", "method": "RHF", "pointsPerAxis": 32})
-    owners = set(result["atomIndex"])
-    assert owners == {0, 1, 2}, f"only atoms {sorted(owners)} own surface"
-
-
-def test_the_nucleus_of_each_atom_is_dominated_by_that_atom():
-    """The vertex nearest each nucleus belongs to that atom.
-
-    The dominant atom is decided by the atomic blocks, not by distance, so this
-    is a real check that the blocks behave: the density just outside a nucleus
-    is overwhelmingly that atom's own.
-    """
-    result = _rpc("density_surface", {
-        "atoms": WATER, "basis": "6-31g", "method": "RHF", "pointsPerAxis": 36})
-    _mf, atoms = _mean_field(WATER)
-    coords = geometry.atoms_to_coords(atoms)
-    vertices = _vertices(result)
-    for index, centre in enumerate(coords):
-        nearest = int(np.argmin(np.linalg.norm(vertices - centre, axis=1)))
-        assert result["atomIndex"][nearest] == index, (
-            f"the vertex nearest atom {index} is owned by "
-            f"{result['atomIndex'][nearest]}")
+    nucleus = result["atoms"][0]["nucleusDensity"]
+    assert nucleus > 0
+    assert all(abs(value - nucleus) < 1e-6 for value in result["vertexDensity"])
+    low, high = result["densityRange"]
+    assert abs(low - high) < 1e-9, "a one-atom surface has no range to show"
 
 
 def test_the_atoms_carry_the_engine_colour_palette():
-    """The colour a vertex takes is the engine's own CPK colour for the element.
+    """The atom list still reports the engine's own CPK colour for the element.
 
-    The surface and the ball-and-stick model have to agree about which colour
-    means which element, and the engine is the authority on that palette.
+    The surface is coloured by density now, but the legend and the ball-and-stick
+    model still agree about which colour means which element, and the engine is
+    the authority on that palette.
     """
     from pyscf_mobile import elements
 
@@ -403,8 +460,8 @@ def test_a_contour_above_the_peak_yields_an_empty_surface_not_an_error():
         "level": 999.0})
     assert result["vertices"] == []
     assert result["indices"] == []
-    assert result["atomIndex"] == []
-    assert result["atomShare"] == []
+    assert result["vertexDensity"] == []
+    assert result["densityRange"] == [0.0, 0.0]
 
 
 def test_a_non_positive_contour_is_rejected():
@@ -445,7 +502,7 @@ def test_a_density_fitted_run_draws_the_same_surface():
         "densityFit": True})
     assert abs(plain["peak"] - fitted["peak"]) < 0.05 * plain["peak"]
     assert plain["level"] == fitted["level"]
-    assert len(plain["atomIndex"]) == len(fitted["atomIndex"])
+    assert len(plain["vertexDensity"]) == len(fitted["vertexDensity"])
 
 
 def test_a_dft_run_draws_a_surface():
@@ -454,7 +511,7 @@ def test_a_dft_run_draws_a_surface():
         "atoms": WATER, "basis": "6-31g", "method": "RKS", "xc": "b3lyp",
         "pointsPerAxis": 32})
     assert result["indices"]
-    assert result["atomIndex"]
+    assert result["vertexDensity"]
 
 
 def test_an_unrestricted_reference_draws_a_surface():
@@ -464,4 +521,4 @@ def test_an_unrestricted_reference_draws_a_surface():
         "method": "UHF", "spin": 2, "charge": 0, "pointsPerAxis": 24})
     assert result["indices"]
     assert result["peak"] > 0
-    assert result["atomIndex"]
+    assert result["vertexDensity"]

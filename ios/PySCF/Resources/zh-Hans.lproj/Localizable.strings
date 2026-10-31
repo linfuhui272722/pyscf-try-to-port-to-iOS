@@ -49,7 +49,7 @@
 "common.done" = "完成";
 "common.no" = "否";
 "common.yes" = "是";
-"density.blurb" = "分子外围以一张等密度曲面绘制电子密度。曲面按原子着色：每一区域取该处电子密度占主导的原子的颜色，因此图中既显示密度所在，也显示密度属于哪个原子。";
+"density.blurb" = "分子外围以一张半透明的等密度曲面绘制电子密度。曲面按密度着色：密度最高处为红色，经橙、黄、绿过渡到最弥散处的蓝色，因此图中显示分子各部分承载的电子密度高低。";
 "density.clipped" = "曲面被采样盒截断——它超出了网格所能容纳的范围，因此你看到的边界是盒壁，而非电子云的真实边界。";
 "density.cube" = "立方体";
 "density.detail" = "精细度";
@@ -59,12 +59,13 @@
 "density.detail.contour" = "等值面 %.4f e/bohr³。";
 "density.empty" = "请先运行一次计算，再打开此页面查看密度云。";
 "density.emptySurface" = "没有曲面达到此等值面。分子的密度始终未达到所要求的水平，因此没有可绘制的内容。";
-"density.legend" = "各原子占曲面的比例";
-"density.legend.vertices" = "%d 个顶点";
-"density.levels" = "等值面";
+"density.legend" = "各原子核处的密度";
+"density.legend.high" = "高";
+"density.legend.low" = "低";
+"density.contour" = "等值面";
 "density.loading" = "正在构建密度曲面……";
 "density.method" = "参考方法";
-"density.note" = "等值面是绝对密度，单位为电子每立方玻尔，因此同一数值在任何分子上都代表相同密度。峰值为采样网格上的最大值，远低于原子核处的密度：那里的尖峰过于陡峭，此间距的网格无法分辨。";
+"density.note" = "等值面是绝对密度，单位为电子每立方玻尔，因此同一数值在任何分子上都代表相同密度。颜色表示各原子在其自身原子核处承载的密度，那里密度最高、原子之间的差异也最大；曲面本身位于同一等值面上，因此颜色随其下方的原子变化，而非沿曲面位置变化。";
 "density.noCube" = "无密度立方体 — 请启用“密度立方体”后重新计算。";
 "density.origin" = "原点";
 "density.peak" = "峰值密度";

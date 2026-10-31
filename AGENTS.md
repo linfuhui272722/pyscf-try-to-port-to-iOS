@@ -378,21 +378,37 @@ flat accessor yields **no vertices** while the triangle count stays right (see
 just offset from the molecule (`OrbitalMesh` centres on the same vector as
 `MoleculeLayout`).
 
-### The density viewer draws one surface coloured by atom
+### The density viewer draws one surface coloured by density
 
 The Density screen shows the total electron density as the whole molecule in 3D
 wrapped in a translucent envelope. It is **one closed surface at a single
-absolute contour**, not a set of nested shells, and it is **coloured by which
-atom's electrons dominate the density at each point** rather than by the
-density's value.
+absolute contour**, not a set of nested shells, and it is **coloured by the
+density the molecule carries at each atom's position** — red for the densest,
+through orange, yellow and green to blue for the most diffuse, with every
+neighbouring pair of stops interpolated so there is no banding.
 
-Both of those are deliberate. Colouring by density value says only "high here,
-low there", which the shape of the surface already shows; colouring by atom
-answers "whose electrons are these", which is what a density plot is read for.
-And one surface rather than several removes a real failure mode: with nine
-translucent shells at one render order, an outer shell hid the inner ones from
-most angles, so only part of the colouring was visible — the bug the user
-reported as "at some angles only part of the colours show".
+**The contour's own value cannot be the quantity shown.** The surface is an
+isosurface: the density on it is the same everywhere by definition, so colouring
+a vertex by the field *at that vertex* would paint the whole surface one flat
+colour. What actually varies across the surface is which atom the density
+belongs to, so the quantity used is the density at each atom's own nucleus,
+blended across the surface between neighbouring atoms. This is the WebMO-style
+picture: the shape says where the cloud is, the colour says how dense the
+molecule is over each part of it.
+
+**The ramp must be logarithmic.** The nuclear densities span orders of magnitude
+— measured in 6-31G, water's oxygen nucleus carries 291.16 e/bohr³ against its
+hydrogens' 0.249, a factor of 1168. On a linear scale every light atom would sit
+in the first 0.1% of the ramp and the whole surface would come out red. So
+`DensityPalette.position(of:low:high:)` takes the position from the logarithm.
+
+**The ramp is scaled to the surface, not to fixed absolute values.** `low` and
+`high` are the extremes of the vertex densities *on this molecule's surface*.
+The interesting contrast is between the atoms in front of the user, and the same
+hydrogen should read cool in water and in a heavy-metal complex. (Note this is
+the opposite choice from `level`, which *is* absolute — the contour has to mean
+the same density on every molecule, the colour is a relative statement within
+one.)
 
 * `run_density_surface` in `engine.py` — the counterpart of
   `run_orbital_surface`. `level` is the contour, an **absolute** density in
@@ -402,23 +418,38 @@ reported as "at some angles only part of the colours show".
   orders of magnitude between basis sets, total densities do not). A low value
   wraps the molecule; a high one tightens onto the atoms and eventually breaks
   the surface into one lobe per atom.
-* `_density_vertex_atoms` partitions the density matrix into **atomic blocks** —
-  `rho_a(r) = sum_{i,j in a} ao_i(r) D_ij ao_j(r)` over `aoslice_by_atom` — so
-  the blocks sum to the total density with no double counting. Each vertex is
-  assigned the atom with the largest contribution, plus that atom's share of the
-  local density. The blocks are evaluated **only at the mesh vertices** (a few
-  thousand points) rather than on the whole grid (tens of thousands), which is
-  what keeps it cheap. A vertex whose blocks cancel to nothing falls back to the
-  nearest nucleus; that cannot happen on a positive-level contour, but it must
-  not crash on a corrupted payload.
+* `_density_vertex_colours` computes both numbers the picture needs. Each atom's
+  **nuclear density** comes from its own **atomic block** of the density matrix —
+  `rho_a(R_a) = sum_{i,j in a} ao_i(R_a) D_ij ao_j(R_a)` over `aoslice_by_atom` —
+  which partitions the basis functions, so the blocks sum to the total density
+  with no double counting, and evaluating one atom's block at its own nucleus
+  gives *that atom's* electrons and not the total.
+* **The vertex blend is weighted by inverse-square distance, not by the atomic
+  blocks' share of the local density.** This was measured, not guessed. The
+  blocks are exact, but far from the nuclei their *ratio* is a ratio of small,
+  nearly cancelling numbers and swings hard between neighbouring vertices: on
+  water at a 0.242 Å grid step it moved a vertex **0.71** of the way along the
+  ramp in a single step (99th percentile 0.55), which is a hard colour edge at
+  most bond midpoints. Distance weighting measures **0.17** worst and **0.13** at
+  the 99th percentile — smooth, and it drops the per-vertex `eval_gto` over the
+  whole mesh, since the weight needs only the atom positions. Being a normalised
+  convex combination in the logarithm, it can never leave the range of the
+  nuclear densities.
+* **The surface never reaches the nuclear densities.** At the app's default
+  contour of 0.002 e/bohr³ the surface sits 1.57 Å from oxygen and 1.04 Å from
+  each hydrogen, so the densest vertex is about 8.85 e/bohr³ against the oxygen
+  nucleus's 291 — the picture spans a factor of ~10, not 1168. That is expected
+  and is why `test_a_vertex_on_a_nucleus_takes_that_atoms_density` calls the
+  helper with vertices placed *on* the nuclei rather than going through the
+  surface, where no vertex ever gets near one.
 * **The bracketing invariant is the authoritative test.** Every mesh vertex at
   contour `L` must sit in a cell whose corner values bracket `L`, since the
   vertex is the linear interpolation of one such crossing. This is exact and
   local: it cannot drift with grid spacing the way a global check can.
-* **The attribution is tested against the definition, not the helper.** The test
-  recomputes the atomic blocks from `aoslice_by_atom` and the density matrix; a
-  test that called `_density_vertex_atoms` would only check it against itself.
-  Helium is the sharp case: one atom owns every vertex with a share of exactly 1.
+* **The nuclear density is tested against the definition, not the helper.** The
+  test recomputes the atomic blocks from `aoslice_by_atom` and the density
+  matrix; a test that called `_density_vertex_colours` would only check it
+  against itself.
 * **Signed volume is not a test, and the mesh is not watertight.** The
   divergence-theorem volume was tried and dropped, because the mesh `isosurface`
   returns is **not a closed 2-manifold**. Measured on an analytic sphere (a
@@ -465,13 +496,12 @@ reported as "at some angles only part of the colours show".
 * `gridStep` is the **maximum** step over the three axes, not a per-axis triple:
   the box is cubic but the atoms are not, so the steps differ and reporting one
   of them makes an anisotropic grid look isotropic.
-* `DensityPalette` maps an atom to a colour, not a density value to a ramp. The
-  engine sends each atom's **CPK hex** in the payload, so the surface and the
-  ball-and-stick model agree about which colour means which element. A share
-  below 1 mixes the atom's colour toward a neutral grey by at most 35%, so a
-  region shared between two atoms reads as a blend without washing every atom to
-  the same tone. An unparseable hex or a missing attribution falls back to the
-  neutral grey, which reads as "unattributed" rather than as a deliberate colour.
+* The engine still sends each atom's **CPK hex** in the payload even though the
+  surface is no longer coloured by it, because the legend and the ball-and-stick
+  model still agree about which colour means which element. `DensityMesh` leaves
+  the material's `diffuse` white: with a `.color` source present SceneKit
+  multiplies the vertex colour by it, so anything but white would tint every
+  atom the same way.
 * The mesh reaches past the atoms, so `DensityMesh.boundingRadius` must take
   part in the camera framing or a diffuse surface is cropped. `boundingRadius` is
   measured **from the given centre**, so it legitimately changes with the centre;

@@ -1638,35 +1638,50 @@ _MAX_DENSITY_PADDING = 9.0
 _MAX_DENSITY_POINTS_PER_AXIS = 56
 
 
-def _density_vertex_atoms(mf, atoms: list[dict], vertices: list) -> dict:
-    """Which atom's electrons dominate the density at each surface vertex.
+def _density_vertex_colours(mf, atoms: list[dict], vertices: list) -> dict:
+    """The electron density each surface vertex is coloured by, and its range.
+
+    The surface is drawn at one absolute contour, so the density *on* the
+    surface is the same everywhere by construction and colouring a vertex by the
+    field at that vertex would paint the whole surface one flat colour.  What
+    varies across the surface is which atom the density belongs to, and the
+    quantity that answers "how much density is here" is the density at that
+    atom's own nucleus: the O nucleus of water carries 291 e/bohr^3 against the
+    H nucleus's 0.25, so a surface region over oxygen is genuinely far denser
+    than one over hydrogen.
 
     The atomic blocks of the density matrix partition the basis functions, so
-    ``rho_a(r) = sum_{i,j in a} ao_i(r) D_ij ao_j(r)`` sums over atoms to the
-    total density with no double counting.  Evaluating those blocks only at the
-    mesh vertices -- rather than on the whole grid -- is what keeps this cheap:
-    the vertices are a few thousand points against a grid of tens of thousands.
+    ``rho_a(R_a) = sum_{i,j in a} ao_i(R_a) D_ij ao_j(R_a)`` is atom ``a``'s own
+    electrons at its own nucleus, with no double counting.
 
-    Each vertex is assigned the atom with the largest contribution, and that
-    atom's share of the local density is carried alongside, so a region shared
-    between two atoms can be drawn as shared rather than as belonging wholly to
-    one.  Where the blocks cancel to nothing the nearest nucleus is used; that
-    cannot happen on a positive-level contour, but a corrupted payload should
-    not crash the engine.
+    The vertex colour is those nuclear densities blended in the logarithm, and
+    the blend is weighted by the inverse square of the distance to each atom.
+    The logarithm, because the densities span three orders of magnitude and a
+    linear blend would put every light atom within a rounding error of the
+    heaviest.  Inverse-square distance rather than the atomic blocks' share of
+    the local density: the blocks are exact but their *ratio* far from the
+    nuclei is a ratio of small, nearly cancelling numbers, and it swings hard
+    enough between neighbouring vertices to band the surface -- measured on
+    water at a 0.24 ångström grid step, it moved a quarter of the way along the
+    ramp in one step.  Distance weighting is smooth, is exact at each nucleus
+    (the weight there is unbounded, so the vertex takes that atom's own value),
+    and being a convex combination in the logarithm it can never leave the range
+    of the nuclear densities.
     """
     from .elements import BY_SYMBOL
 
     count = len(vertices)
-    atoms_json = [
-        {
-            "index": index,
-            "element": str(atom["element"]),
-            "color": getattr(BY_SYMBOL.get(str(atom["element"])), "color", "#808080"),
-        }
-        for index, atom in enumerate(atoms)
-    ]
     if count == 0:
-        return {"atoms": atoms_json, "atomIndex": [], "atomShare": []}
+        atoms_json = [
+            {
+                "index": index,
+                "element": str(atom["element"]),
+                "color": getattr(BY_SYMBOL.get(str(atom["element"])), "color", "#808080"),
+                "nucleusDensity": 0.0,
+            }
+            for index, atom in enumerate(atoms)
+        ]
+        return {"atoms": atoms_json, "vertexDensity": [], "densityRange": [0.0, 0.0]}
 
     ranges = _ao_ranges(mf)
     dm = np.asarray(mf.make_rdm1(), dtype=float)
@@ -1675,48 +1690,64 @@ def _density_vertex_atoms(mf, atoms: list[dict], vertices: list) -> dict:
     coords = np.asarray(vertices, dtype=float).reshape(-1, 3)
     centres = geometry.atoms_to_coords(atoms)
 
-    contributions = np.zeros((count, len(ranges)), dtype=float)
-    # Slabbed for the same reason the grid evaluation is: the dense AO matrix
-    # for every vertex at once is what peaks, and a jetsam kill is silent.
-    chunk = max(1, (1 << 20) // max(int(mf.mol.nao_nr()), 1))
-    for start in range(0, count, chunk):
-        stop = min(start + chunk, count)
-        # The vertices are in ångström; ``eval_gto`` reads its argument in Bohr.
-        block = mf.mol.eval_gto("GTOval", coords[start:stop] / _BOHR_TO_ANGSTROM)
-        for index, (first, last) in enumerate(ranges):
-            columns = block[:, first:last]
-            contributions[start:stop, index] = np.einsum(
-                "vi,ij,vj->v", columns, dm[first:last, first:last], columns)
+    # The density each atom's electrons carry at that atom's own nucleus.
+    nucleus_density = np.zeros(len(ranges), dtype=float)
+    for index, (first, last) in enumerate(ranges):
+        # ``eval_gto`` reads its argument in Bohr, as everywhere else in this file.
+        ao = mf.mol.eval_gto(
+            "GTOval", (centres[index:index + 1] / _BOHR_TO_ANGSTROM))[0]
+        column = ao[first:last]
+        nucleus_density[index] = float(column @ dm[first:last, first:last] @ column)
 
-    totals = contributions.sum(axis=1)
-    dominant = np.argmax(contributions, axis=1)
-    degenerate = totals <= 1e-12
-    if degenerate.any():
-        distances = np.linalg.norm(
-            coords[degenerate][:, None, :] - centres[None, :, :], axis=2)
-        dominant[degenerate] = np.argmin(distances, axis=1)
-    safe = np.where(degenerate, 1.0, totals)
-    share = contributions[np.arange(count), dominant] / safe
-    share[degenerate] = 1.0
+    atoms_json = [
+        {
+            "index": index,
+            "element": str(atom["element"]),
+            "color": getattr(BY_SYMBOL.get(str(atom["element"])), "color", "#808080"),
+            "nucleusDensity": round(float(nucleus_density[index]), 8),
+        }
+        for index, atom in enumerate(atoms)
+    ]
+
+    positive = nucleus_density[nucleus_density > 0.0]
+    floor = float(positive.min()) if positive.size else 1.0
+    log_nucleus = np.log(np.maximum(nucleus_density, floor))
+
+    # Inverse-square distance weights.  The floor keeps a vertex sitting exactly
+    # on a nucleus from dividing by zero, and is far below any real interatomic
+    # spacing, so it only ever bites on the nucleus itself.
+    distances = np.linalg.norm(coords[:, None, :] - centres[None, :, :], axis=2)
+    weights = 1.0 / np.maximum(distances, 1e-3) ** 2
+    weights /= weights.sum(axis=1, keepdims=True)
+    vertex_density = np.exp(weights @ log_nucleus)
+
+    finite = vertex_density[np.isfinite(vertex_density) & (vertex_density > 0.0)]
+    low = float(finite.min()) if finite.size else 0.0
+    high = float(finite.max()) if finite.size else 0.0
 
     return {
         "atoms": atoms_json,
-        "atomIndex": [int(value) for value in dominant],
-        "atomShare": [round(float(value), 4) for value in share],
+        "vertexDensity": [round(float(value), 8) for value in vertex_density],
+        "densityRange": [round(low, 8), round(high, 8)],
     }
 
 
 def run_density_surface(params: dict) -> dict:
-    """The total electron density as one isosurface, coloured by atom.
+    """The total electron density as one isosurface, coloured by density.
 
     The picture is a single closed surface wrapping the molecule, not a set of
     nested shells: the surface is the contour of the total density at one
-    absolute level, and its colour says which atom's electrons dominate the
-    density at each point on it.  That is the picture that answers "where is the
-    density, and whose is it", and it removes the one real failure mode of the
-    shell version -- with several translucent shells at the same render order,
-    an outer shell hides the inner ones from most angles, so only part of the
+    absolute level, and its colour says how much density the molecule carries
+    over each part of it.  That removes the one real failure mode of the shell
+    version -- with several translucent shells at the same render order, an
+    outer shell hides the inner ones from most angles, so only part of the
     colouring is visible.
+
+    The colour is the density at each atom's own nucleus, blended across the
+    surface; see ``_density_vertex_colours`` for why the contour's own value
+    cannot be the quantity shown.  The Swift side runs that value through a
+    red-to-blue ramp, so a region over a heavy atom reads hot and one over
+    hydrogen reads cool.
 
     ``level`` is the contour, in electrons per cubic Bohr.  A low value wraps
     the whole molecule in one surface; a high one tightens onto the atoms and
@@ -1769,7 +1800,7 @@ def run_density_surface(params: dict) -> dict:
 
     mesh = orbital_surface.isosurface(
         values, values.shape, np.asarray(origin), np.asarray(step), level)
-    attribution = _density_vertex_atoms(mf, atoms, mesh["vertices"])
+    colours = _density_vertex_colours(mf, atoms, mesh["vertices"])
 
     wall_ms = (time.perf_counter() - start) * 1000.0
     return {
@@ -1786,9 +1817,9 @@ def run_density_surface(params: dict) -> dict:
         "gridStep": round(max(float(v) for v in step), 6),
         "gridOrigin": [round(float(v), 6) for v in origin],
         "clipped": clipped,
-        "atoms": attribution["atoms"],
-        "atomIndex": attribution["atomIndex"],
-        "atomShare": attribution["atomShare"],
+        "atoms": colours["atoms"],
+        "vertexDensity": colours["vertexDensity"],
+        "densityRange": colours["densityRange"],
         "triangles": len(mesh["indices"]) // 3,
         **mesh,
     }

@@ -107,10 +107,10 @@ fixtures = {
                                                     "source": "pm-mulliken", "index": 0,
                                                     "pointsPerAxis": 24}),
     # The Density screen draws the total density the same way, as one surface at
-    # a single contour with an atom attribution per vertex, rather than as a
-    # plane through the cube.  The contour is the app's default and the
+    # a single contour coloured by the density at each atom's nucleus, rather
+    # than as a plane through the cube.  The contour is the app's default and the
     # resolution is below the app's, both to keep the fixture small: the
-    # attribution and framing rules do not depend on either.
+    # colouring and framing rules do not depend on either.
     "density_surface": call("density_surface", {"atoms": WATER, "basis": "sto-3g", "method": "RHF",
                                                 "level": 0.002, "pointsPerAxis": 24}),
     "mp2": call("mp2", {"atoms": WATER, "basis": "sto-3g", "reference": "RHF", "include": []}),
