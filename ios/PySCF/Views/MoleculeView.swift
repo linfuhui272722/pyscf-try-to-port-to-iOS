@@ -30,8 +30,8 @@ struct MoleculeView: UIViewRepresentable {
     /// changing it never rebuilds the mesh.
     var orbitalOpacity: Double = MoleculeLayout.defaultOrbitalOpacity
     /// The electron-density cloud to overlay, or ``nil``.  Drawn as one closed
-    /// surface coloured by atom, around the same molecule and in the same frame
-    /// as the orbital would be.
+    /// translucent surface coloured by the density at each atom's position,
+    /// around the same molecule and in the same frame as the orbital would be.
     var density: DensitySurface? = nil
     /// Whether the density cloud is drawn.
     var showsDensity: Bool = true
@@ -116,35 +116,74 @@ struct MoleculeView: UIViewRepresentable {
             // when both are shown.
             scene.rootNode.addChildNode(orbitalNode)
             scene.rootNode.addChildNode(densityNode)
-            installLights()
+            installLights(in: scene)
         }
 
-        /// Key, fill and rim lights parented to the camera, so the shading does
-        /// not change when a larger molecule pushes the camera back.
-        private func installLights() {
-            let key = SCNLight()
-            key.type = .omni
-            key.intensity = 700
-            let keyNode = SCNNode()
-            keyNode.light = key
-            keyNode.position = SCNVector3(2.2, 1.8, 2.6)
-            cameraNode.addChildNode(keyNode)
+        /// A ring of equal lamps around the model, plus a surrounding light
+        /// image, parented to the camera.
+        ///
+        /// Parented to the camera so the shading does not change when a larger
+        /// molecule pushes the camera back.  The rig is omnidirectional: the six
+        /// lamps sit on ±x, ±y and ±z at equal intensity, so no direction is
+        /// brighter than another, and ``lightingEnvironment`` fills every
+        /// remaining direction at once.  The earlier key/fill/rim trio all sat on
+        /// the camera side, which left the far side of the cloud black — the
+        /// colours there were unreadable — and put the brightest light where the
+        /// viewer was looking.
+        ///
+        /// No ``ambient`` is set on the lamps: SceneKit sums ambient across
+        /// lights, so a floor set here would be multiplied by six.  The floor is
+        /// the light image's intensity instead — see
+        /// ``MoleculeLayout/environmentIntensity``.
+        private func installLights(in scene: SCNScene) {
+            for lamp in MoleculeLayout.lamps {
+                let light = SCNLight()
+                light.type = .omni
+                light.intensity = CGFloat(lamp.intensity)
 
-            let fill = SCNLight()
-            fill.type = .omni
-            fill.intensity = 320
-            let fillNode = SCNNode()
-            fillNode.light = fill
-            fillNode.position = SCNVector3(-2.4, -1.2, 1.4)
-            cameraNode.addChildNode(fillNode)
+                let node = SCNNode()
+                node.light = light
+                node.position = SCNVector3(
+                    Float(lamp.x * MoleculeLayout.lampDistance),
+                    Float(lamp.y * MoleculeLayout.lampDistance),
+                    Float(lamp.z * MoleculeLayout.lampDistance))
+                cameraNode.addChildNode(node)
+            }
 
-            let rim = SCNLight()
-            rim.type = .omni
-            rim.intensity = 260
-            let rimNode = SCNNode()
-            rimNode.light = rim
-            rimNode.position = SCNVector3(0, 1.6, -3.0)
-            cameraNode.addChildNode(rimNode)
+            // Light from every direction at once: image-based lighting, so it
+            // reaches the crevices between the lamps that no lamp can, and being
+            // uniform it adds light without adding a direction.
+            scene.lightingEnvironment.contents = Self.lightFaces()
+            scene.lightingEnvironment.intensity =
+                CGFloat(MoleculeLayout.environmentIntensity)
+        }
+
+        /// The surrounding light image, as the six faces of a cube map.
+        ///
+        /// A cube map rather than one image because that is the form SceneKit
+        /// reads without having to guess at a projection, and it is the form the
+        /// property documents.  The faces are flat grey to within the deliberate
+        /// spread documented on ``MoleculeLayout.environmentSpread``; a light
+        /// image with real variation would be a direction the model is lit from,
+        /// which is the thing this rig exists to avoid.
+        private static func lightFaces() -> [UIImage] {
+            let size = 8
+            let grey = CGFloat(MoleculeLayout.environmentGrey)
+            let spread = CGFloat(MoleculeLayout.environmentSpread)
+            return (0..<6).map { face in
+                // Faces vary in brightness by a fixed small amount, so the six
+                // are not identical but the image stays flat enough to read as
+                // "light from everywhere".
+                let shade = grey * (1 + spread * Double(face - 3) / 3)
+                let renderer = UIGraphicsImageRenderer(
+                    size: CGSize(width: size, height: size))
+                return renderer.image { context in
+                    context.cgContext.setFillColor(
+                        UIColor(white: shade, alpha: 1).cgColor)
+                    context.cgContext.fill(
+                        CGRect(x: 0, y: 0, width: size, height: size))
+                }
+            }
         }
 
         func update(geometry: GeometryDescription?, elements: [Element],
@@ -352,15 +391,25 @@ struct MoleculeView: UIViewRepresentable {
         /// The density surface as a node with a colour per vertex.
         ///
         /// Same geometry as ``makeSurfaceNode``, with a third source carrying
-        /// the per-vertex colours, so the surface shows which atom each region
-        /// belongs to.  The material's own ``diffuse`` is left white: with a
-        /// ``.color`` source present the vertex colour is multiplied by it, and
-        /// anything but white would tint every element the same way.
+        /// the per-vertex colours, so the surface shows how dense the molecule is
+        /// over each part of it.  The material's own ``diffuse`` is left white:
+        /// with a ``.color`` source present the vertex colour is multiplied by
+        /// it, and anything but white would tint every region the same way.
         ///
-        /// ``isDoubleSided`` is false here too, and the depth write is on: this
-        /// is a closed surface drawn opaquely enough that the far wall should
-        /// be hidden behind the near one, which is what makes the near wall's
-        /// colour the one that reads.
+        /// ``isDoubleSided`` is false, and the depth write is on — unlike the
+        /// orbital, which turns it off.  The two overlays are opposite cases. The
+        /// orbital is a set of open lobes whose walls overlap, so writing depth
+        /// would make them fight where they meet.  This one is a single closed
+        /// surface enclosing the molecule: with the write on, only the near wall
+        /// draws, so the molecule inside is seen through exactly one layer of
+        /// colour.  Turning the write off would draw the far wall as well, and the
+        /// veil over the atoms would compound from one layer to two — the
+        /// opposite of what the user asked for.
+        ///
+        /// Roughness is high because the material is physically based: with a
+        /// smooth one the six lamps concentrate into a small highlight that is
+        /// hard on the eyes, and the low end of the ramp goes black in the
+        /// shadows between them.
         private static func makeColouredNode(
             _ mesh: DensityMesh, opacity: Double, renderingOrder: Int
         ) -> SCNNode {
@@ -406,10 +455,14 @@ struct MoleculeView: UIViewRepresentable {
             let material = SCNMaterial()
             material.diffuse.contents = UIColor.white
             material.lightingModel = .physicallyBased
-            material.roughness.contents = 0.55
+            material.roughness.contents = CGFloat(MoleculeLayout.cloudRoughness)
             material.metalness.contents = 0.0
             material.transparency = CGFloat(opacity)
             material.isDoubleSided = false
+            // Stated rather than left to the default, because the orbital next
+            // door sets the opposite and the two are deliberate: see the note on
+            // this method.
+            material.writesToDepthBuffer = true
             material.blendMode = .alpha
             geometry.materials = [material]
 

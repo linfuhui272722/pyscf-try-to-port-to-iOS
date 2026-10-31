@@ -508,6 +508,59 @@ one.)
   the invariant worth testing is that every vertex moves by exactly the centre,
   which is what the layout test checks.
 
+### The preview is lit from every direction, and the cloud is drawn thin
+
+Both of these were reported as rendering faults, and both were invisible to the
+model layer: the engine was right and the scene built without error, so nothing
+but a device screenshot shows them.
+
+**The light rig is a symmetric ring, not a key/fill/rim trio.** The first rig
+was three lamps at 700/320/260, all on the camera side. That left the far side of
+the cloud in shadow, and the ramp's dark end came out black — the user's "有部分
+颜色因为阴影太黑了看不见". It also aimed the brightest light at the viewer, which is
+what made it glare. The rig is now six equal lamps on ±x, ±y and ±z
+(`MoleculeLayout.lamps`), which is symmetric through the origin, so the direction
+sum is exactly zero and no direction is brighter than another. The lamp data lives
+in `MoleculeLayout` rather than inline in the renderer so the host tests can
+assert that symmetry — it is the whole point of the rig and it is one edit away
+from being broken by adding a seventh, brighter lamp.
+
+* **The ambient floor comes from `lightingEnvironment`, not from `ambient` on
+  the lamps.** This is a trap worth knowing: SceneKit **sums** ambient
+  contributions across lights, so setting `ambient` on six lamps delivers the
+  floor six times over — 0.45 each would arrive as 2.7 and blow the model out to
+  white. A single uniform `lightingEnvironment` cube map has one well-defined
+  intensity, and being uniform it lifts a crevice that no lamp can reach without
+  adding a direction. It is what keeps the low end of the ramp readable, since a
+  crevice between two atoms is shadowed from every lamp at once.
+* **Glare is a roughness problem, not a specular problem.** The material is
+  `.physicallyBased`, so `specular` and `shininess` do nothing at all — the old
+  `specular.contents = UIColor.white` on the atoms was already a no-op. What
+  makes a highlight hard on the eyes is *low* roughness, which concentrates the
+  lamps into a small bright spot. `cloudRoughness` is 0.9 for the cloud, which
+  spreads the same light over a wide area. The atoms stay glossier (0.35) on
+  purpose: they are small, and reading them as spheres is useful.
+* **The density cloud opens at 0.28, not 0.55.** This envelope **closes around
+  the whole molecule**, so every atom sits behind its near wall and the veil
+  applies at full strength — unlike the orbital envelope, which is a set of open
+  lobes. At 0.55 the atoms were half-veiled and the screen read as "分子都被遮住
+  了". The floor is 0.05 so the slider's bottom leaves a visible shell.
+* **The cloud writes depth and the orbital does not, and that is deliberate.**
+  `makeColouredNode` sets `writesToDepthBuffer = true`; `makeSurfaceNode` sets it
+  false. They are opposite cases. The orbital is open lobes whose walls overlap,
+  so writing depth makes them fight where they meet. The density surface is one
+  closed surface: with the write on only the near wall draws, so the molecule is
+  seen through **exactly one** layer of colour. Turning the write off would draw
+  the far wall too and compound the veil from one layer to two — the opposite of
+  what was asked for.
+* **The opacity slider shows a percentage.** Its wiring was verified end to end
+  and was always correct — `model.densityOpacity` → `MoleculeView` → `applyOpacity`
+  → `material.transparency`, called *after* the mesh rebuild so the builder's
+  default is immediately overridden, with a stable signature so it does not
+  rebuild in a loop. The reason it felt dead is that a change near the top of the
+  range is genuinely hard to see on an enclosing surface, and the control had no
+  label or readout at all. It now has both, matching the orbital slider.
+
 ### Saved 3D pictures are recipes, not meshes
 
 Opening a history entry for an orbital or a density surface re-runs the engine

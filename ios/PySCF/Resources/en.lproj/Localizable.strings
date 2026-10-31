@@ -67,6 +67,7 @@
 "density.method" = "Reference";
 "density.note" = "The contour is an absolute density in electrons per cubic Bohr, so the same value means the same density on any molecule. The colour is the density each atom carries at its own nucleus, which is where the density is greatest and differs most between atoms; the surface itself sits at one contour, so its colour varies with the atom below rather than with position along it.";
 "density.noCube" = "No density cube available — enable “Density cube” and run a calculation.";
+"density.opacity" = "Cloud opacity";
 "density.origin" = "Origin";
 "density.peak" = "Peak density";
 "density.plane" = "z-plane %d of %d";

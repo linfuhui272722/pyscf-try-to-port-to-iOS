@@ -44,14 +44,88 @@ struct MoleculeLayout {
     static let minimumOrbitalOpacity = 0.05
     static let maximumOrbitalOpacity = 1.0
     static let defaultOrbitalOpacity = 0.55
-    /// The same range for the density surface.  It opens opaque enough that the
-    /// atom colours read: there is now one surface rather than several nested
-    /// shells, so the transparencies no longer compound, and the colour is the
-    /// information the picture carries.  A floor above zero keeps the surface
-    /// visible as a shape while the atoms inside stay readable.
-    static let minimumDensityOpacity = 0.10
+    /// The same range for the density surface.
+    ///
+    /// The default is low because this envelope **closes around the whole
+    /// molecule**: every atom is behind the near wall, so at 0.55 the atoms were
+    /// half-veiled and the screen read as "the molecule is hidden", which is what
+    /// the user reported.  At 0.28 the shape still reads as a cloud while the
+    /// ball-and-stick model stays legible through it.  The floor is above zero
+    /// so the bottom of the slider leaves a visible shell rather than nothing.
+    static let minimumDensityOpacity = 0.05
     static let maximumDensityOpacity = 1.0
-    static let defaultDensityOpacity = 0.55
+    static let defaultDensityOpacity = 0.28
+
+    /// One lamp of the light rig, in camera-relative coordinates.
+    struct Lamp: Equatable {
+        let x: Double
+        let y: Double
+        let z: Double
+        let intensity: Double
+    }
+
+    /// The light rig, kept here rather than inline in the renderer so the host
+    /// tests can check its shape.
+    ///
+    /// Six equal lamps along ±x, ±y and ±z: an axis-aligned ring, so the
+    /// direction sum is exactly zero and the model is lit from every side at
+    /// once.  The first attempt was a key/fill/rim trio — all three on the
+    /// camera side, at 700/320/260 — which left the far side of the cloud in
+    /// shadow and made those colours read as black, so part of the ramp was
+    /// invisible.  It also pointed the brightness at the camera, which is what
+    /// made it glare.
+    ///
+    /// Equal intensity rather than a brighter key: a ring with a dominant lamp
+    /// would reintroduce the directionality the ring exists to remove.  The
+    /// per-lamp intensity is lower than the old key's because six lamps sum
+    /// where one key stood alone.
+    static let lamps: [Lamp] = [
+        Lamp(x: 1, y: 0, z: 0, intensity: 220),
+        Lamp(x: -1, y: 0, z: 0, intensity: 220),
+        Lamp(x: 0, y: 1, z: 0, intensity: 220),
+        Lamp(x: 0, y: -1, z: 0, intensity: 220),
+        Lamp(x: 0, y: 0, z: 1, intensity: 220),
+        Lamp(x: 0, y: 0, z: -1, intensity: 220),
+    ]
+
+    /// Distance of each lamp from the camera node.
+    static let lampDistance = 3.0
+
+    /// How much light comes from every direction at once, as the surrounding
+    /// light image's intensity.
+    ///
+    /// This is also the ambient floor, and it is deliberately the *only* place
+    /// the floor comes from.  Setting ``ambient`` on each of the six lamps was
+    /// the first attempt and is a trap: SceneKit sums ambient contributions
+    /// across lights, so six lamps at 0.45 would deliver 2.7 and blow the model
+    /// out to white.  A single uniform light image has one well-defined
+    /// intensity instead, and being uniform it lifts a crevice that no lamp can
+    /// reach without making any direction brighter than another.
+    ///
+    /// It is what keeps the low end of the ramp readable: a crevice between two
+    /// atoms is shadowed from every lamp at once, and those vertices used to
+    /// come out black, which swallowed the blue end of the ramp.
+    static let environmentIntensity: Double = 0.7
+
+    /// Mid-grey the light image is built from, and how far the six cube faces
+    /// vary around it.
+    ///
+    /// A uniform image is the point: any variation would be a direction the
+    /// model is lit from, which is what this rig exists to avoid.  The small
+    /// spread keeps the faces from being bit-identical, which makes the cube
+    /// map cheap to validate and avoids a degenerate texture.
+    static let environmentGrey: Double = 0.5
+    static let environmentSpread: Double = 0.06
+
+    /// Roughness of the density cloud's material.
+    ///
+    /// The material is physically based, so ``specular`` and ``shininess`` do
+    /// nothing and glare comes from low roughness — a smooth surface concentrates
+    /// the lamps into a small bright highlight.  High roughness spreads the same
+    /// light over a wide area, which is the "not hard on the eyes" reading.  The
+    /// atoms stay glossier (0.35) on purpose: they are small and reading them as
+    /// spheres is useful.
+    static let cloudRoughness: Double = 0.9
     /// One radius for every bond, in ångström, so bonds do not thicken just
     /// because a molecule is larger.
     static let bondRadius = 0.075

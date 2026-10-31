@@ -317,6 +317,99 @@ do {
     }
 }
 
+print("the light rig lights the model from every side")
+do {
+    // The rig has to be omnidirectional: a directional rig leaves the far side
+    // of the cloud in shadow, and the colours there read as black, so part of
+    // the ramp is invisible.  A rig that is symmetric through the origin has a
+    // direction sum of zero, which is the property that makes it omnidirectional
+    // rather than merely bright.
+    let lamps = MoleculeLayout.lamps
+    expect(lamps.count >= 4, "there are several lamps (\(lamps.count))")
+
+    let sum = lamps.reduce((x: 0.0, y: 0.0, z: 0.0)) {
+        (x: $0.x + $1.x, y: $0.y + $1.y, z: $0.z + $1.z)
+    }
+    let magnitude = (sum.x * sum.x + sum.y * sum.y + sum.z * sum.z).squareRoot()
+    expect(magnitude < 1e-9,
+           "the lamps cancel through the origin, so no direction dominates (\(magnitude))")
+
+    // Every lamp the same brightness, or the brightest one becomes a key light
+    // and the rig is directional again.
+    let intensities = Set(lamps.map { $0.intensity })
+    expect(intensities.count == 1, "every lamp is equally bright (\(intensities))")
+
+    // Each lamp at a real distance from the origin, so none sits inside the
+    // molecule where it would light one atom and not the others.
+    let radii = lamps.map { ($0.x * $0.x + $0.y * $0.y + $0.z * $0.z).squareRoot() }
+    expect(radii.allSatisfy { abs($0 - 1.0) < 1e-9 },
+           "every lamp is on the unit sphere (\(Set(radii)))")
+
+    // A ring with a lamp on every axis, so the six faces of the model each get
+    // a lamp rather than the light favouring one plane.
+    let components = lamps.map { [$0.x, $0.y, $0.z] }
+    for axis in 0..<3 {
+        let others = (0..<3).filter { $0 != axis }
+        let aligned = components.filter { vector in
+            others.allSatisfy { abs(vector[$0]) < 1e-9 }
+        }
+        expect(aligned.contains { $0[axis] > 0.5 },
+               "axis \(axis) has a lamp on its positive side")
+        expect(aligned.contains { $0[axis] < -0.5 },
+               "axis \(axis) has a lamp on its negative side")
+    }
+
+    // The ambient floor is what keeps a crevice between two atoms, which no lamp
+    // can reach, from going black.  It must come from the surrounding light
+    // image rather than from `ambient` on the lamps: SceneKit sums ambient
+    // across lights, so a floor set on six of them would be delivered six times
+    // over and blow the model out to white.
+    expect(MoleculeLayout.environmentIntensity >= 0.3,
+           "the omnidirectional fill is substantial (\(MoleculeLayout.environmentIntensity))")
+    expect(MoleculeLayout.environmentIntensity <= 1.0,
+           "the fill does not blow the model out to white")
+
+    // The light image must be nearly uniform: variation in it is a direction the
+    // model is lit from, which is what the rig exists to avoid.
+    expect(MoleculeLayout.environmentSpread < 0.15,
+           "the light image is nearly uniform (\(MoleculeLayout.environmentSpread))")
+
+    // A physically-based material's glare comes from low roughness, which
+    // concentrates the lamps into a small highlight.  The cloud must be rougher
+    // than a glossy default, or the highlight is hard on the eyes.
+    expect(MoleculeLayout.cloudRoughness >= 0.7,
+           "the cloud's material is diffuse, not glossy (\(MoleculeLayout.cloudRoughness))")
+}
+
+print("the cloud does not veil the molecule it encloses")
+do {
+    // The density surface closes around the whole molecule, so every atom is
+    // behind its near wall and the veil applies at full strength.  At the old
+    // default of 0.55 the atoms were half-covered and the screen read as "the
+    // molecule is hidden", which is what the user reported.
+    expect(MoleculeLayout.defaultDensityOpacity < 0.4,
+           "the cloud opens transparent enough to see the atoms through "
+           + "(\(MoleculeLayout.defaultDensityOpacity))")
+    expect(MoleculeLayout.defaultDensityOpacity > MoleculeLayout.minimumDensityOpacity,
+           "the default is above the slider's floor, so it can be made fainter")
+
+    // A floor above zero so the bottom of the slider leaves a visible shell
+    // rather than making the surface vanish.
+    expect(MoleculeLayout.minimumDensityOpacity > 0.0,
+           "the floor leaves the surface visible as a shape")
+
+    // The slider must have real travel, or "adjusting" it does nothing -- which
+    // is what the user suspected.
+    let travel = MoleculeLayout.maximumDensityOpacity - MoleculeLayout.minimumDensityOpacity
+    expect(travel > 0.5, "the slider has real travel (\(travel))")
+
+    // The density veil is drawn through one layer only (the near wall), so it
+    // can afford to be fainter than the orbital envelope, which is a set of
+    // overlapping walls.
+    expect(MoleculeLayout.defaultDensityOpacity <= MoleculeLayout.defaultOrbitalOpacity,
+           "the enclosing cloud is no more opaque than the orbital envelope")
+}
+
 print("")
 print(failures == 0 ? "\(checks)/\(checks) checks passed" : "\(failures) of \(checks) checks FAILED")
 exit(failures == 0 ? 0 : 1)

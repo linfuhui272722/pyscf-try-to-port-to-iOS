@@ -256,18 +256,37 @@ struct DensityScreen: View {
     }
 
     /// The cloud's transparency, and whether it is drawn at all.
+    ///
+    /// The percentage is shown because the slider has no other feedback: the
+    /// surface encloses the molecule, so a change near the top of the range is
+    /// hard to see, and without a number the control reads as doing nothing.
+    /// The useful direction is towards transparent for the same reason as the
+    /// orbital envelope -- an opaque cloud hides the atoms it is drawn around.
     @ViewBuilder
     private var opacityControls: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Toggle(L("density.show"), isOn: $model.showsDensity)
                 .font(.caption)
-            HStack(spacing: 8) {
+            HStack {
+                Text(L("density.opacity"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "%.0f%%", model.densityOpacity * 100))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 12) {
                 Image(systemName: "circle.dotted")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                 Slider(
                     value: $model.densityOpacity,
-                    in: MoleculeLayout.minimumDensityOpacity...MoleculeLayout.maximumDensityOpacity)
+                    in: MoleculeLayout.minimumDensityOpacity...MoleculeLayout.maximumDensityOpacity) {
+                    Text(L("density.opacity"))
+                }
                 Image(systemName: "circle.fill")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .disabled(!model.showsDensity)
