@@ -213,3 +213,8 @@
 "orbitals.viewer.composition" = "成分";
 "orbitals.viewer.compositionTotal" = "合计 %@%%";
 "orbitals.viewer.compositionNote" = "该轨道在各原子上的占比，按角动量（s、p、d、f）列出，即该原子基函数在此轨道中的 Mulliken 布居。负值表示反键贡献。基组中的第二组 p 壳层不单独列出，因为它们都是价层 p 函数。";
+"orbitals.viewer.scope" = "显示的轨道";
+"orbitals.viewer.scope.all" = "全部";
+"orbitals.viewer.scope.valence" = "仅价层";
+"orbitals.viewer.scope.hidden" = "已隐藏 %@ 个内层轨道";
+"orbitals.viewer.coreBadge" = "内层";

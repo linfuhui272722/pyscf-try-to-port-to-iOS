@@ -704,6 +704,10 @@ struct LocalizationResult {
     var perAtom: [[Double]]
     /// The same numbers as percentages, for display.
     var percent: [[Double]]
+    /// The localised columns that are valence, as indices into the column set.
+    /// Empty when the engine could not classify them, which the viewer reads as
+    /// "no filtering available" rather than as "everything is core".
+    var valenceOrbitals: [Int]
     var analysisMethod: String
 
     init(_ json: JSONObject) {
@@ -717,6 +721,7 @@ struct LocalizationResult {
         let compositions = json.object("compositions")
         perAtom = compositions?.raw["perAtom"] as? [[Double]] ?? []
         percent = compositions?.raw["percent"] as? [[Double]] ?? []
+        valenceOrbitals = json.integers("valenceOrbitals")
         analysisMethod = json.value("analysisMethod") as String? ?? ""
     }
 
@@ -906,10 +911,16 @@ struct OrbitalComposition {
     /// makes the per-AO Mulliken populations of any orbital sum to one, so a
     /// value away from 100 is a self-check on the density.
     var total: Double
+    /// True when this orbital holds core electrons, so the viewer's valence
+    /// option hides it.  Classified by the engine, which has the coefficients;
+    /// a payload written before the field existed reads as not core, which
+    /// shows the orbital rather than hiding one on a guess.
+    var isCore: Bool
 
     init(_ json: JSONObject) {
         components = json.objects("components").map(OrbitalComponent.init)
         total = json.number("total") ?? 0
+        isCore = json.value("isCore") as Bool? ?? false
     }
 
     /// ``O1 p 58%`` style label, strongest component first.
@@ -940,16 +951,48 @@ struct OrbitalCompositions {
     var orbitals: [OrbitalComposition]
     /// The percentage below which a component is left out of the list.
     var threshold: Double
+    /// The ladder indices of the valence orbitals, and of the core ones.
+    ///
+    /// These are indices into the full ladder, not into a filtered copy, so a
+    /// button built from one still addresses the orbital it names.  The
+    /// complement is derived from ``orbitals`` when the engine did not send a
+    /// list, which keeps an older payload working.
+    var valenceOrbitals: [Int]
+    var coreOrbitals: [Int]
 
     init(_ json: JSONObject) {
-        orbitals = json.objects("orbitals").map(OrbitalComposition.init)
+        let parsed = json.objects("orbitals").map(OrbitalComposition.init)
+        orbitals = parsed
         threshold = json.number("threshold") ?? 0
+        // ``integers`` returns an empty array for a missing key, so an absent
+        // list is recognised by being empty and the complement is derived from
+        // the per-orbital flags instead.  The flags are read through the local
+        // copy because a closure over a stored property would capture ``self``
+        // before it is fully initialised.
+        let sent = json.integers("valenceOrbitals")
+        let sentCore = json.integers("coreOrbitals")
+        valenceOrbitals = sent.isEmpty
+            ? parsed.indices.filter { !parsed[$0].isCore }
+            : sent
+        coreOrbitals = sentCore.isEmpty
+            ? parsed.indices.filter { parsed[$0].isCore }
+            : sentCore
     }
 
     /// The composition of one orbital, or ``nil`` when the payload is short.
     func composition(of index: Int) -> OrbitalComposition? {
         guard index >= 0, index < orbitals.count else { return nil }
         return orbitals[index]
+    }
+
+    /// The ladder indices to offer, given whether the core is to be shown.
+    ///
+    /// An empty valence list means the engine could not classify the orbitals,
+    /// so the unfiltered list is returned rather than no buttons at all: a
+    /// filter that hides everything reads as a broken run.
+    func indices(showingCore: Bool) -> [Int] {
+        if showingCore || valenceOrbitals.isEmpty { return Array(orbitals.indices) }
+        return valenceOrbitals
     }
 }
 
@@ -984,6 +1027,15 @@ struct OrbitalSurface {
     /// read from the run payload because a localised orbital is not one of the
     /// canonical orbitals that payload describes.
     var composition: OrbitalComposition?
+    /// Whether the drawn orbital is core, and which orbitals of this same
+    /// source are valence.
+    ///
+    /// The valence list is here because a localised source's columns come out
+    /// of a rotation rather than out of the SCF, so the run payload -- which
+    /// describes the canonical ladder -- cannot answer for them.  Indices are
+    /// into that source's own orbital list.
+    var isCore: Bool
+    var valenceOrbitals: [Int]
 
     init(_ json: JSONObject) {
         source = json.value("source") ?? "mo"
@@ -1000,6 +1052,8 @@ struct OrbitalSurface {
         positive = OrbitalPhase(json.object("positive") ?? JSONObject([:]))
         negative = OrbitalPhase(json.object("negative") ?? JSONObject([:]))
         composition = json.object("composition").map(OrbitalComposition.init)
+        isCore = json.value("isCore") as Bool? ?? false
+        valenceOrbitals = json.integers("valenceOrbitals")
     }
 
     var triangleCount: Int { positive.triangleCount + negative.triangleCount }

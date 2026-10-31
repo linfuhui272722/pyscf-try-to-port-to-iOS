@@ -22,7 +22,7 @@ import time
 import traceback
 from typing import Any, Iterable
 
-from . import geometry, localized_orbitals, natural_orbitals, orbital_localization, orbital_surface
+from . import core_orbitals, geometry, localized_orbitals, natural_orbitals, orbital_localization, orbital_surface
 from .diaglog import crash_probe, get_logger
 
 # --------------------------------------------------------------------------
@@ -1458,19 +1458,34 @@ def _orbital_compositions(mf, threshold: float = 1.0) -> dict | None:
         return None
 
     per_orbital = []
+    core_flags: list[bool] = []
+    mo_occ = np.asarray(mf.mo_occ, dtype=float)
     for block in _coefficient_blocks(mf):
         # ``(S C)_mu,i * C_mu,i`` is the Mulliken population of AO mu in
         # orbital i, so one matrix product covers every orbital at once.
         weighted = overlap @ block
+        # Classified per block, so an unrestricted reference gets a core count
+        # for each spin rather than one shared between them.
+        core_flags.extend(core_orbitals.core_flags(mf, block, mo_occ))
         for index in range(block.shape[1]):
             per_orbital.append(
                 _compose_column(block[:, index], weighted[:, index], groups, threshold))
+
+    # Attached here rather than inside ``_compose_column`` because the flags come
+    # from the whole block at once, not from one column.
+    for entry, is_core in zip(per_orbital, core_flags):
+        entry["isCore"] = is_core
 
     return {
         "threshold": threshold,
         # One entry per orbital, in the ladder's own order, so index i here is
         # orbital i on the chart.
         "orbitals": per_orbital,
+        # The viewer's "valence only" option reads these.  The indices are into
+        # the full ladder, not into a filtered copy, so a button built from one
+        # still addresses the orbital it names.
+        "valenceOrbitals": [i for i, is_core in enumerate(core_flags) if not is_core],
+        "coreOrbitals": [i for i, is_core in enumerate(core_flags) if is_core],
     }
 
 
@@ -1557,6 +1572,13 @@ def run_orbital_surface(params: dict) -> dict:
         # The composition of the orbital actually drawn, which for a localised
         # source is not one of the canonical orbitals the run payload carries.
         "composition": _column_composition(mf, column),
+        # Whether the drawn orbital is core, and which orbitals of this same
+        # source are valence.  A localised source cannot answer that from the
+        # run payload, because its columns come out of a rotation rather than
+        # out of the SCF, so the viewer's "valence only" list is built from this.
+        "isCore": bool(core_orbitals.core_flags(
+            mf, column.reshape(-1, 1), np.array([occupation]))[0]),
+        "valenceOrbitals": _source_valence_indices(mf, source),
         "pointsPerAxis": points,
         # The grid the surface was actually sampled on, which exceeds
         # ``pointsPerAxis`` when a diffuse orbital forced the box to grow: the
@@ -1578,6 +1600,32 @@ def run_orbital_surface(params: dict) -> dict:
         "negative": negative,
         "triangles": (len(positive["indices"]) + len(negative["indices"])) // 3,
     }
+
+
+def _source_valence_indices(mf, source: str) -> list[int]:
+    """Which orbitals of ``source`` are valence, as indices into that source.
+
+    For a canonical source this is the same list the run payload carries.  For a
+    localised one the columns have to be produced before they can be classified,
+    and producing them is the expensive part of drawing a localised orbital, so
+    the classification rides along with the surface the viewer already asked
+    for.  A failure to classify leaves the list empty, which the viewer reads as
+    "no filtering available" rather than as "everything is core".
+    """
+    try:
+        if source == "mo":
+            return core_orbitals.valence_indices(
+                mf, np.asarray(mf.mo_coeff, dtype=float),
+                np.asarray(mf.mo_occ, dtype=float))
+        # The whole localised set is needed, not the single column the viewer
+        # draws, because the classification compares the columns with each other.
+        coefficients, _sweeps, _objective = orbital_localization.localize_coefficients(
+            mf, method=source)
+        return core_orbitals.valence_indices(
+            mf, np.asarray(coefficients, dtype=float),
+            orbital_localization.localized_orbital_occupations(mf))
+    except Exception:
+        return []
 
 
 def run_localized_orbitals(params: dict) -> dict:

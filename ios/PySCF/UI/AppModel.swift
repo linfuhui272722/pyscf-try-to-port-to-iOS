@@ -182,6 +182,25 @@ final class AppModel: ObservableObject {
     @Published var isovalueFraction: Double = 0.05
     /// Whether the envelope is drawn, so the molecule can be inspected alone.
     @Published var showsOrbital: Bool = true
+    /// Whether the orbital list offers every orbital or only the valence ones.
+    ///
+    /// "Valence" means the orbitals built from the outermost occupied atomic
+    /// shells, which for water is the oxygen 2s and 2p and the hydrogen 1s, and
+    /// not the oxygen 1s.  The classification is the engine's, which has the
+    /// coefficients; the option only decides which of the classified indices
+    /// are offered.  Default off, so a run shows the ladder it always did.
+    @Published var showsValenceOnly: Bool = false
+    /// The orbital a tap has asked for but that has not arrived yet.
+    ///
+    /// Separate from ``viewedOrbital`` because that is set only once the
+    /// surface is in hand, and a localised orbital takes a full mean-field
+    /// solve to produce.  Without this the tapped button would look untouched
+    /// for the whole of that wait, which reads as a dead control rather than as
+    /// a slow one.
+    @Published var pendingOrbital: Int?
+    /// What ``pendingOrbital`` indexes, so a highlight is not shown on a button
+    /// of a different source that happens to share the index.
+    @Published var pendingOrbitalSource: String?
     /// How opaque the envelope is drawn, 0.05 to 1.  A render property only:
     /// it is applied to the existing material rather than refetching the
     /// surface, so dragging the slider does not recompute anything.
@@ -570,6 +589,8 @@ final class AppModel: ObservableObject {
             // cube belongs to the old wavefunction.
             viewedOrbital = nil
             orbitalSurface = nil
+            pendingOrbital = nil
+            pendingOrbitalSource = nil
             logText = output.log
             screen = .results
             recordHistory(kind: historyKind(for: calculation),
@@ -621,7 +642,18 @@ final class AppModel: ObservableObject {
         orbitalRequestToken += 1
         let token = orbitalRequestToken
         isLoadingOrbital = true
-        defer { if token == orbitalRequestToken { isLoadingOrbital = false } }
+        // Recorded before the await so the tapped button shows its selection at
+        // once.  A localised orbital costs a mean-field solve, and a control
+        // that does nothing visible for seconds is one the user taps again.
+        pendingOrbital = index
+        pendingOrbitalSource = chosen
+        defer {
+            if token == orbitalRequestToken {
+                isLoadingOrbital = false
+                pendingOrbital = nil
+                pendingOrbitalSource = nil
+            }
+        }
         do {
             let surface = try await engine.orbitalSurface(
                 atoms: atomSpec,
@@ -651,6 +683,22 @@ final class AppModel: ObservableObject {
     func redrawOrbital() async {
         guard let index = viewedOrbital else { return }
         await loadOrbital(index, source: orbitalSource)
+    }
+
+    /// Switches which orbital source the viewer is showing.
+    ///
+    /// The request token is bumped so that a surface still being computed for
+    /// the previous source is abandoned.  Without that its answer would arrive
+    /// after this switch and write its own source back into ``orbitalSource``,
+    /// silently undoing the choice -- and the button the user then tapped would
+    /// load from a list that is no longer the one on screen.
+    func selectOrbitalSource(_ source: String) {
+        orbitalRequestToken += 1
+        pendingOrbital = nil
+        pendingOrbitalSource = nil
+        viewedOrbital = nil
+        orbitalSurface = nil
+        orbitalSource = source
     }
 
     /// Redraws the current orbital once the isovalue has settled.

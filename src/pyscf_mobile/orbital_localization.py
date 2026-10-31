@@ -49,6 +49,8 @@ from typing import Any
 
 import numpy as np
 
+from . import core_orbitals
+
 # The Jacobi sweep stops when no pair rotation can improve the objective by
 # more than this.  The gain each engine reports is the exact improvement the
 # best rotation would give, so the test is a stationarity test rather than a
@@ -495,5 +497,11 @@ def localize(
         "objective": round(float(objective), 10),
         "centroids": _centroids(mol, localised),
         "compositions": _composition(mol, overlap, localised),
+        # Which of these columns are valence, for the viewer's "valence only"
+        # option.  A core orbital is largely invariant under a localisation, so
+        # the rotation leaves it on its own atom and it stays identifiable by
+        # where its population sits.
+        "valenceOrbitals": core_orbitals.valence_indices(
+            mf, localised, localized_orbital_occupations(mf)),
         "analysisMethod": f"{family} localised orbitals (Multiwfn 2026.10.18 port)",
     }

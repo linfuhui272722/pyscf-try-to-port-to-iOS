@@ -159,6 +159,28 @@ do {
     expect(scf.grid != nil, "density grid present")
     expect(scf.moCoefficients?.count == 7, "MO coefficient matrix present")
 
+    // Which orbitals the valence option offers.  Sto-3G water has one core
+    // orbital -- the oxygen 1s -- so the other six are valence, and the option
+    // has to hide exactly that one.  The indices address the full ladder, not a
+    // filtered copy, or a button would draw a different orbital from the one it
+    // names.
+    if let compositions = scf.orbitalCompositions {
+        expect(compositions.orbitals.count == scf.nBasis,
+               "one composition per orbital (\(compositions.orbitals.count))")
+        expect(compositions.coreOrbitals == [0],
+               "the oxygen 1s is the only core orbital (\(compositions.coreOrbitals))")
+        expect(compositions.valenceOrbitals == Array(1..<7),
+               "the valence list is the rest of the ladder (\(compositions.valenceOrbitals))")
+        expect(compositions.orbitals[0].isCore, "orbital 1 is marked core")
+        expect(!compositions.orbitals[1].isCore, "orbital 2 is not core")
+        expect(compositions.indices(showingCore: true).count == scf.nBasis,
+               "showing the core offers every orbital")
+        expect(compositions.indices(showingCore: false) == compositions.valenceOrbitals,
+               "hiding the core offers the valence list")
+    } else {
+        expect(false, "the run carries the orbital compositions")
+    }
+
     if let grid = scf.grid {
         expect(grid.shape.count == 3, "grid shape is 3D \(grid.shape)")
         expect(grid.values.count == grid.shape.reduce(1, *), "grid values match shape")
@@ -212,6 +234,20 @@ do {
     expect(boys.localization?.localization == "boys",
            "an explicit method is honoured (\(boys.localization?.localization ?? "nil"))")
     expect(boys.localization?.family == "Foster-Boys", "Boys family named")
+
+    // A localised source is classified too, so the valence option hides the
+    // same orbitals whichever source is on screen.  Localisation rotates the
+    // occupied space but cannot mix the core with the valence, so the core
+    // column survives the rotation and stays identifiable.
+    if let localization = localized.localization {
+        let columns = localization.centroids.count
+        expect(localization.valenceOrbitals.count == columns - 1,
+               "one core column among \(columns) (\(localization.valenceOrbitals))")
+        expect(!localization.valenceOrbitals.contains(0),
+               "the core column is not in the valence list")
+    } else {
+        expect(false, "the localised payload carries the valence list")
+    }
 }
 
 print("orbital surface")
@@ -301,6 +337,14 @@ do {
         expect(false, "the surface carries the composition of what it drew")
     }
 
+    // The surface also says whether what it drew is core, and which orbitals of
+    // its own source are valence.  A localised list cannot be built from the run
+    // payload, because that describes the canonical ladder, so this is where the
+    // viewer gets it.  MO 5 of water is a valence orbital.
+    expect(!surface.isCore, "MO 5 of water is a valence orbital")
+    expect(surface.valenceOrbitals == Array(1..<7),
+           "the canonical valence list matches the run (\(surface.valenceOrbitals))")
+
     // Centring is a pure translation: every vertex moves by exactly the centre,
     // and the bounding radius is the furthest vertex from the origin in the
     // shifted frame, so it is recomputed here rather than assumed invariant.
@@ -338,6 +382,13 @@ do {
     expect(localised.hasGeometry, "the localised orbital has geometry")
     expect(localised.positive.isEmpty != localised.negative.isEmpty,
            "exactly one lobe carries the localised orbital")
+
+    // The valence list of a localised source comes with the surface, because the
+    // run payload describes the canonical ladder instead.  Column 1 of water's
+    // localised set is the oxygen core, so the list starts at 2.
+    expect(localised.isCore, "the first localised column is the core orbital")
+    expect(localised.valenceOrbitals == Array(1..<5),
+           "the localised valence list skips the core (\(localised.valenceOrbitals))")
 }
 
 print("ccsd")

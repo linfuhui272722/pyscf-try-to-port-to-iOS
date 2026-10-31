@@ -378,6 +378,80 @@ flat accessor yields **no vertices** while the triangle count stays right (see
 just offset from the molecule (`OrbitalMesh` centres on the same vector as
 `MoleculeLayout`).
 
+### Core and valence orbitals
+
+`src/pyscf_mobile/core_orbitals.py` classifies each orbital as core or valence,
+which drives the viewer's "all / valence only" option. The classification is the
+engine's, because it has the coefficients; the Swift side only decides which of
+the indices it was given to offer.
+
+* Core AOs come from PySCF's `pyscf.data.elements.N_CORE_SHELLS` — the same
+  table `chemcore` freeze-core uses — and an orbital is core when its Mulliken
+  population on those AOs is above `CORE_POPULATION_THRESHOLD`. Water's core
+  orbital is 0.9956 and every other orbital is below 0.003, so the separation is
+  clean; do not lower the threshold to "catch" a borderline case without
+  checking the other orbitals.
+* **Count shells by `nc`, the contracted count, not per `_bas` row.** A
+  generalised contraction packs several shells into one row: cc-pVDZ nitrogen has
+  a single row with `nc=2`, two contracted s shells. Counting rows makes the core
+  one shell short and misclassifies a valence orbital as core.
+* **An occupation criterion is required.** Without it virtual orbitals come out
+  as core — N2/cc-pVDZ MO 17 was misclassified — because a virtual orbital can
+  have high weight on core-like functions. `core_flags` takes `occupations` for
+  this reason; pass them wherever they are known.
+* Localisation rotates the occupied space but cannot mix the core with the
+  valence, so a localised source is classified the same way and its core column
+  stays identifiable (column 0 across PM, Boys and ER).
+
+The valence list reaches the Swift side by two routes, because they describe
+different things: the **run payload** (`orbitalCompositions.valenceOrbitals`)
+covers the canonical ladder, and the **surface payload** (`OrbitalSurface`) covers
+whichever source was drawn, since a localised set is not the canonical one. The
+Swift model derives the missing half from the per-orbital `isCore` flags, so a
+payload that sends only one of the two still works.
+
+### Touch targets on the orbital buttons
+
+The localised-orbital buttons were hard to tap for two reasons that compounded,
+and both are fixed in `orbitalButton` in `RootView.swift`:
+
+* The hit area was the drawn glyph. Under `.buttonStyle(.plain)` a `Text` with
+  padding has no background shape to hit, so the tap had to land on the digits.
+  The shared button now sets a 44-point minimum in both directions and a
+  `.contentShape` over the whole rounded rectangle.
+* A localised orbital costs a mean-field solve engine-side (264 ms for benzene
+  PM, 816 ms for ER on a desktop; seconds on a phone), and `loadOrbital` used to
+  set `viewedOrbital` only after the await, so nothing changed on screen for the
+  whole wait and the user re-tapped. `pendingOrbital`/`pendingOrbitalSource` are
+  now set **before** the await, and the button shows a ring and disables itself.
+
+The highlight is decided from `orbitalSource` and the index **together**. The two
+selectors were separate before and only `orbitalSelector` compared the source,
+so a highlight could sit on a button of a list that was no longer shown. Any new
+selector must go through `orbitalButton` rather than build its own `Button`.
+
+Switching source bumps `orbitalRequestToken` (`selectOrbitalSource`). Without
+that, a surface still being computed for the previous source lands afterwards and
+writes its own source back into `orbitalSource`, undoing the switch.
+
+### SwiftUI builder limits on this toolchain
+
+Two things bite in `RootView.swift`, and neither error names the real problem:
+
+* A `ViewBuilder` body takes **at most ten** children. An eleventh reports as
+  `extra argument in call` or `extra arguments at positions #11, #12`, pointing
+  at the first child rather than the overflow. The orbital viewer panel is at the
+  limit: `viewerNotices()` and `surfaceDetail()` exist to group children for this
+  reason, not for readability.
+* A long chain of nested optional bindings inside a builder can exceed the
+  type-checker's time budget — `the compiler is unable to type-check this
+  expression in reasonable time`. The fix is to move the subview into its own
+  `@ViewBuilder` function (`canonicalButtonLabel`), not to add type annotations.
+
+Also, this toolchain's Swift does **not** accept `@ViewBuilder` on a parameter of
+function type, so a reusable button cannot take a builder closure. `orbitalButton`
+takes an already-built `Label: View` instead.
+
 ## Testing notes
 
 `test_shims.py` rewrites `sys.path` to put the vendored shims ahead of the real

@@ -256,41 +256,15 @@ struct OrbitalsScreen: View {
 
                 sourcePicker(result)
 
+                valenceScopePicker(result)
+
                 if model.orbitalSource == "mo" {
                     orbitalSelector(result)
                 } else {
                     localisedSelector(result)
                 }
 
-                if model.isLoadingOrbital {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text(L("orbitals.viewer.loading"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // A localisation request that fails used to leave the viewer
-                // unchanged, so a button that could not be served looked like
-                // one that did nothing when tapped.  The message is shown here
-                // as well as on the builder page.
-                if let message = model.errorMessage {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                // A surface the grid could not contain is cut off at the box
-                // wall, which reads as the orbital spilling over the molecule.
-                // Say so rather than let it look like a real shape.
-                if let surface = model.orbitalSurface, surface.clipped {
-                    Text(L("orbitals.viewer.clipped"))
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                viewerNotices()
 
                 // The molecule and the orbital share one scene, so the envelope
                 // is drawn at its correct place in the molecule rather than in
@@ -305,27 +279,75 @@ struct OrbitalsScreen: View {
                     .background(Color(.secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                isovalueControls()
-                opacityControls()
-
-                if let surface = model.orbitalSurface {
-                    MetricRow(
-                        label: L("orbitals.viewer.orbital"),
-                        value: "\(surface.label) · "
-                            + String(format: "%.5f", surface.orbitalEnergy)
-                            + " Ha · " + String(format: "%.2f", surface.occupation) + " e")
-                    MetricRow(
-                        label: L("orbitals.viewer.surface"),
-                        value: LF("orbitals.viewer.surfaceDetail",
-                                  surface.triangleCount,
-                                  String(format: "%.4f", surface.isovalue))
-                    )
-                    compositionPanel(surface.composition)
-                    Text(L("orbitals.viewer.note"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                // The two sliders are grouped because a view builder takes at
+                // most ten children and this panel is at the limit.
+                Group {
+                    isovalueControls()
+                    opacityControls()
                 }
+
+                surfaceDetail()
             }
+        }
+    }
+
+    /// What the viewer has to say about the request in flight, or about the
+    /// surface on screen.
+    ///
+    /// Grouped into one child of the panel because the panel is at the ten-view
+    /// limit of a builder, and these are the messages that come and go.
+    @ViewBuilder
+    private func viewerNotices() -> some View {
+        if model.isLoadingOrbital {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text(L("orbitals.viewer.loading"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        // A localisation request that fails used to leave the viewer unchanged,
+        // so a button that could not be served looked like one that did nothing
+        // when tapped.  The message is shown here as well as on the builder page.
+        if let message = model.errorMessage {
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        // A surface the grid could not contain is cut off at the box wall, which
+        // reads as the orbital spilling over the molecule.  Say so rather than
+        // let it look like a real shape.
+        if let surface = model.orbitalSurface, surface.clipped {
+            Text(L("orbitals.viewer.clipped"))
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The numbers for the surface on screen: which orbital, the mesh it was
+    /// drawn as, and what it is made of.
+    @ViewBuilder
+    private func surfaceDetail() -> some View {
+        if let surface = model.orbitalSurface {
+            MetricRow(
+                label: L("orbitals.viewer.orbital"),
+                value: "\(surface.label) · "
+                    + String(format: "%.5f", surface.orbitalEnergy)
+                    + " Ha · " + String(format: "%.2f", surface.occupation) + " e")
+            MetricRow(
+                label: L("orbitals.viewer.surface"),
+                value: LF("orbitals.viewer.surfaceDetail",
+                          surface.triangleCount,
+                          String(format: "%.4f", surface.isovalue))
+            )
+            compositionPanel(surface.composition)
+            Text(L("orbitals.viewer.note"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -345,10 +367,10 @@ struct OrbitalsScreen: View {
                 get: { model.orbitalSource },
                 set: { choice in
                     // Switching source changes what the index means, so the old
-                    // selection is cleared rather than carried over.
-                    model.viewedOrbital = nil
-                    model.orbitalSurface = nil
-                    model.orbitalSource = choice
+                    // selection is cleared rather than carried over.  The model
+                    // does that and abandons any request still in flight for the
+                    // previous source.
+                    model.selectOrbitalSource(choice)
                 }
             )) {
                 Text(L("orbitals.viewer.source.mo")).tag("mo")
@@ -361,56 +383,177 @@ struct OrbitalsScreen: View {
         }
     }
 
+    /// Chooses whether the list offers every orbital or only the valence ones.
+    ///
+    /// The two answers differ by the core orbitals: for water that is the
+    /// oxygen 1s alone, and the valence list is the picture of the bonding.  The
+    /// control is offered only when there is something to hide and the
+    /// classification is known, so a molecule with no core -- hydrogen -- and a
+    /// list the engine has not classified yet are not given a switch that would
+    /// do nothing or, worse, claim a number it does not have.
+    @ViewBuilder
+    private func valenceScopePicker(_ result: ScfResult) -> some View {
+        if let scope = valenceScope(result), scope.valence < scope.total {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L("orbitals.viewer.scope"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker(L("orbitals.viewer.scope"), selection: $model.showsValenceOnly) {
+                    Text(L("orbitals.viewer.scope.all")).tag(false)
+                    Text(L("orbitals.viewer.scope.valence")).tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text(LF("orbitals.viewer.scope.hidden", scope.total - scope.valence))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// How many orbitals the current source offers, and how many are valence.
+    ///
+    /// ``nil`` when the source has not been classified, which is the localised
+    /// case before anything has been drawn: those columns come out of a rotation
+    /// the run payload does not describe, so they are classified by the surface
+    /// the engine last drew.  Reporting a count of zero there would say every
+    /// orbital is core, which is why the caller is given nothing to show rather
+    /// than a number to trust.
+    private func valenceScope(_ result: ScfResult) -> (total: Int, valence: Int)? {
+        if model.orbitalSource == "mo" {
+            guard let compositions = result.orbitalCompositions,
+                  !compositions.valenceOrbitals.isEmpty else { return nil }
+            return (compositions.orbitals.count, compositions.valenceOrbitals.count)
+        }
+        guard let surface = model.orbitalSurface,
+              surface.source == model.orbitalSource,
+              !surface.valenceOrbitals.isEmpty else { return nil }
+        return (max(result.nLocalizedOrbitals, 0), surface.valenceOrbitals.count)
+    }
+
+    /// One orbital button, shared by both selectors.
+    ///
+    /// The two lists were separate before and only one of them checked the
+    /// source it belonged to, so switching source left the highlight on a button
+    /// of the list that was no longer shown, and a tap could look unanswered.
+    /// Both now go through here, which decides the highlight from the source and
+    /// the index together.
+    ///
+    /// The frame is given a 44-point minimum in both directions, the size a
+    /// touch target needs to be, because the old label was a bare number and
+    /// came out far smaller than that.
+    ///
+    /// The label arrives already built rather than as a builder closure, because
+    /// this toolchain's Swift does not accept a result-builder attribute on a
+    /// parameter of function type.
+    private func orbitalButton<Label: View>(
+        index: Int,
+        source: String,
+        action: @escaping () -> Void,
+        label: Label
+    ) -> some View {
+        let isSelected = model.viewedOrbital == index && model.orbitalSource == source
+        let isPending = model.pendingOrbital == index && model.pendingOrbitalSource == source
+        return Button(action: action) {
+            label
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(minWidth: 44, minHeight: 44)
+                .background(
+                    isPending ? Color.accentColor.opacity(0.4)
+                        : (isSelected ? Color.accentColor.opacity(0.25)
+                            : Color(.secondarySystemBackground)),
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+                .overlay {
+                    // A ring while the surface is being computed, so the wait is
+                    // visible on the button that was tapped rather than only in
+                    // the progress row above the list.
+                    if isPending {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.accentColor, lineWidth: 2)
+                    }
+                }
+                // Without this the tap only lands on the drawn glyph, which is a
+                // small fraction of the button's frame.
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(isPending)
+    }
+
+    /// The label of one canonical-orbital button.
+    ///
+    /// Split out of the list because the whole thing inlined is more than the
+    /// compiler will type-check in a reasonable time: the composition branch
+    /// alone nests three optional bindings inside a view builder.
+    @ViewBuilder
+    private func canonicalButtonLabel(
+        index: Int,
+        energy: Double,
+        occupation: Double,
+        composition: OrbitalComposition?
+    ) -> some View {
+        VStack(spacing: 2) {
+            Text("\(index + 1)").font(.caption.monospacedDigit().bold())
+            Text(String(format: "%.3f", energy))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            if let composition = composition, composition.isCore {
+                // Marks the orbital the valence option hides, so "All" still
+                // says which ones those are rather than leaving the difference
+                // to be inferred.
+                Text(L("orbitals.viewer.coreBadge"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else if let composition = composition, let dominant = composition.dominant {
+                Text(dominant)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if let percent = composition.dominantPercent {
+                    Text(String(format: "%.0f%%", percent))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            // A dot marks the occupied orbitals, so the virtual ones are not
+            // mistaken for electrons.
+            if occupation > 0.5 {
+                Circle().fill(Color.accentColor)
+                    .frame(width: 5, height: 5)
+                    .padding(3)
+            }
+        }
+    }
+
     /// The canonical molecular orbitals, in the ladder's own numbering.
     @ViewBuilder
     private func orbitalSelector(_ result: ScfResult) -> some View {
+        let indices = result.orbitalCompositions?.indices(showingCore: !model.showsValenceOnly)
+            ?? Array(result.orbitalEnergies.indices)
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(Array(result.orbitalEnergies.enumerated()), id: \.offset) { index, energy in
-                    let occupation = index < result.occupations.count ? result.occupations[index] : 0
+                ForEach(indices, id: \.self) { index in
+                    let energy = index < result.orbitalEnergies.count
+                        ? result.orbitalEnergies[index] : 0
+                    let occupation = index < result.occupations.count
+                        ? result.occupations[index] : 0
                     // The composition travels with the run, so each button can
                     // say what the orbital is made of before it is drawn.  A
                     // payload that skipped the population analysis has none, and
                     // the button then shows the energy alone as it used to.
                     let composition = result.orbitalCompositions?.composition(of: index)
-                    Button {
-                        Task { await model.loadOrbital(index, source: "mo") }
-                    } label: {
-                        VStack(spacing: 2) {
-                            Text("\(index + 1)").font(.caption.monospacedDigit().bold())
-                            Text(String(format: "%.3f", energy))
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            if let composition = composition, let dominant = composition.dominant {
-                                Text(dominant)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                if let percent = composition.dominantPercent {
-                                    Text(String(format: "%.0f%%", percent))
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.tertiary)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            model.viewedOrbital == index && model.orbitalSource == "mo"
-                                ? Color.accentColor.opacity(0.25)
-                                : Color(.secondarySystemBackground),
-                            in: RoundedRectangle(cornerRadius: 8)
-                        )
-                        .overlay(alignment: .topTrailing) {
-                            // A dot marks the occupied orbitals, so the
-                            // virtual ones are not mistaken for electrons.
-                            if occupation > 0.5 {
-                                Circle().fill(Color.accentColor)
-                                    .frame(width: 5, height: 5)
-                                    .padding(3)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
+                    orbitalButton(
+                        index: index,
+                        source: "mo",
+                        action: { Task { await model.loadOrbital(index, source: "mo") } },
+                        label: canonicalButtonLabel(
+                            index: index,
+                            energy: energy,
+                            occupation: occupation,
+                            composition: composition))
                 }
             }
             .padding(.vertical, 2)
@@ -432,24 +575,28 @@ struct OrbitalsScreen: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
+            // The valence columns of a localised source come from the surface
+            // the engine last drew, because the run payload describes the
+            // canonical ladder.  Until one has been drawn every column is
+            // offered, which is what the list did before the filter existed.
+            let surface = model.orbitalSurface?.source == model.orbitalSource
+                ? model.orbitalSurface : nil
+            let valence = Set(surface?.valenceOrbitals ?? [])
+            let indices = (model.showsValenceOnly && !valence.isEmpty)
+                ? (0..<count).filter { valence.contains($0) }
+                : Array(0..<count)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(0..<count, id: \.self) { index in
-                        Button {
-                            Task { await model.loadOrbital(index, source: model.orbitalSource) }
-                        } label: {
-                            Text("\(index + 1)")
-                                .font(.caption.monospacedDigit().bold())
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(
-                                    model.viewedOrbital == index
-                                        ? Color.accentColor.opacity(0.25)
-                                        : Color(.secondarySystemBackground),
-                                    in: RoundedRectangle(cornerRadius: 8)
-                                )
-                        }
-                        .buttonStyle(.plain)
+                    ForEach(indices, id: \.self) { index in
+                        orbitalButton(
+                            index: index,
+                            source: model.orbitalSource,
+                            action: {
+                                let source = model.orbitalSource
+                                Task { await model.loadOrbital(index, source: source) }
+                            },
+                            label: Text("\(index + 1)")
+                                .font(.caption.monospacedDigit().bold()))
                     }
                 }
                 .padding(.vertical, 2)

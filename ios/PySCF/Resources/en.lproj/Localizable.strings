@@ -213,3 +213,8 @@
 "orbitals.viewer.composition" = "Composition";
 "orbitals.viewer.compositionTotal" = "sum %@%%";
 "orbitals.viewer.compositionNote" = "Share of the orbital on each atom, by angular momentum (s, p, d, f) -- the Mulliken population of that atom's functions in this orbital. A negative share is an antibonding contribution. The second p shell of a split-valence basis is not listed separately, because both are valence p functions.";
+"orbitals.viewer.scope" = "Orbitals shown";
+"orbitals.viewer.scope.all" = "All";
+"orbitals.viewer.scope.valence" = "Valence only";
+"orbitals.viewer.scope.hidden" = "Hiding %@ core orbital(s)";
+"orbitals.viewer.coreBadge" = "core";
