@@ -54,14 +54,16 @@ final class HistoryStore {
     ///
     /// ``grid`` is the density cube -- about 124 kB at every basis size, since
     /// it is fixed by the cube dimensions rather than the basis -- and it is
-    /// read only by the Density screen, which renders the *current* result.
-    /// ``moCoefficients`` grows with the basis (about 1.1 MB for benzene in
-    /// def2-tzvp) and no view reads it at all.
+    /// read only by the Density screen's slice view, which renders the *current*
+    /// result.  ``moCoefficients`` grows with the basis (about 1.1 MB for
+    /// benzene in def2-tzvp) and no view reads it at all.
     ///
     /// Neither is needed to list an entry, reload its geometry, or compare its
     /// energy, so dropping them takes the worst case from over a megabyte to
-    /// tens of kilobytes. The cost is that a saved entry cannot drive the
-    /// Density screen; that screen has no history UI, so nothing regresses.
+    /// tens of kilobytes.  The cost is that a saved entry cannot drive the
+    /// Density screen's slice; that screen has no history UI, and the density
+    /// *cloud* a view entry records is rebuilt from its recipe rather than from
+    /// the cube, so nothing regresses.
     static let droppedFields = ["grid", "moCoefficients"]
 
     /// The payload as stored, with the bulky unused fields removed.

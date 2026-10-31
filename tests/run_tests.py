@@ -30,6 +30,7 @@ MODULES = [
     "test_localized_orbitals.py",
     "test_orbital_localization.py",
     "test_orbital_surface.py",
+    "test_density_surface.py",
     "test_core_orbitals.py",
 ]
 

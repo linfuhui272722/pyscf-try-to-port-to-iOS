@@ -212,6 +212,54 @@ final class AppModel: ObservableObject {
     private var orbitalRequestToken = 0
     /// Identifies the newest pending isovalue redraw, so a drag issues one.
     private var orbitalRedrawToken = 0
+
+    /// The electron density as nested shells, once fetched for the 3D view.
+    @Published var densitySurface: DensitySurface?
+    /// Which absolute density levels the picture is drawn at.  Fewer levels is
+    /// a coarser, faster picture; the engine's full set is the default.
+    @Published var densityLevels: [Double] = AppModel.defaultDensityLevels
+    /// How opaque the density cloud is drawn.
+    @Published var densityOpacity: Double = MoleculeLayout.defaultDensityOpacity
+    /// Whether the density cloud is drawn, so the molecule can be inspected
+    /// alone.  The orbital viewer has the same switch for the same reason.
+    @Published var showsDensity: Bool = true
+    /// Set while the density shells are being computed.
+    @Published var isLoadingDensity: Bool = false
+    /// Identifies the newest density request, so a slow earlier one cannot
+    /// overwrite the answer the user is waiting for.
+    private var densityRequestToken = 0
+    /// Identifies the newest pending detail-level redraw, so dragging the
+    /// control issues one request rather than one per step.
+    private var densityRedrawToken = 0
+
+    /// The orbital view last written to the history, as ``source|index``.
+    ///
+    /// The isovalue slider refetches the same orbital on every step, and each
+    /// fetch would otherwise append an entry; this is what keeps one entry per
+    /// orbital rather than one per slider step.
+    private var lastRecordedOrbitalView: String?
+    /// The density view last written, as its level list.
+    private var lastRecordedDensityView: String?
+
+    /// The density levels offered by the detail control, coarsest first.
+    ///
+    /// A subset of the engine's own ladder: the picture is nested shells, and
+    /// past a handful of them the extra surfaces are hidden inside each other
+    /// while the mesh cost keeps rising.
+    static let densityLevelChoices: [(label: String, levels: [Double])] = [
+        ("density.detail.low", [0.01, 0.1]),
+        ("density.detail.medium", [0.005, 0.02, 0.1, 0.5]),
+        ("density.detail.high", [0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]),
+    ]
+
+    /// The default detail, matching the engine's full ladder.
+    static let defaultDensityLevels: [Double] = densityLevelChoices[2].levels
+
+    /// Which detail choice ``densityLevels`` currently matches, if any.
+    var densityDetailIndex: Int {
+        AppModel.densityLevelChoices.firstIndex { $0.levels == densityLevels } ?? 2
+    }
+
     @Published var scanI: Int = 0
     @Published var scanJ: Int = 1
     @Published var maxOptimisationSteps: Int = 40
@@ -345,6 +393,64 @@ final class AppModel: ObservableObject {
         case .mp2: return .mp2
         case .ccsd: return .ccsd
         }
+    }
+
+    // MARK: - Recording views
+
+    /// Records that an orbital surface was drawn.
+    ///
+    /// The mesh is deliberately not stored.  An orbital surface is up to about
+    /// a megabyte of vertices, and the history cap is a hundred entries, so
+    /// keeping them would put tens of megabytes in the app's Documents
+    /// directory for pictures that are cheap to rebuild.  What is stored is the
+    /// recipe -- which orbital, from which source, at what isovalue, on which
+    /// molecule and method -- and the detail view replays it through the engine.
+    ///
+    /// Called once a surface has actually arrived, so a request that failed
+    /// records nothing.
+    func recordOrbitalView(_ surface: OrbitalSurface) {
+        recordHistory(kind: .orbitals,
+                      method: surface.label,
+                      basis: basis,
+                      functional: calculation.usesFunctional ? functional : nil,
+                      atoms: atomSpec,
+                      charge: charge,
+                      spin: spin,
+                      energy: surface.orbitalEnergy,
+                      converged: true,
+                      wallTimeMs: surface.wallTimeMs,
+                      summary: LF("history.summary.orbital",
+                                  surface.source, String(format: "%.4f", surface.isovalue)),
+                      payload: OrbitalViewRecord(surface: surface,
+                                                 method: referenceMethodLabel).encoded())
+    }
+
+    /// Records that a density cloud was drawn.
+    ///
+    /// Stored as the recipe too: the levels, the method and the molecule.  The
+    /// shells are several megabytes and are rebuilt when the entry is opened.
+    func recordDensityView(_ surface: DensitySurface) {
+        recordHistory(kind: .density,
+                      method: surface.method,
+                      basis: basis,
+                      functional: calculation.usesFunctional ? functional : nil,
+                      atoms: atomSpec,
+                      charge: charge,
+                      spin: spin,
+                      energy: surface.energy,
+                      converged: true,
+                      wallTimeMs: surface.wallTimeMs,
+                      summary: LF("history.summary.density", surface.levels.count),
+                      payload: DensityViewRecord(surface: surface,
+                                                 method: referenceMethodLabel).encoded())
+    }
+
+    /// The mean-field label the current builder settings would run, so a
+    /// replayed view asks the engine for the same reference the live one used.
+    var referenceMethodLabel: String {
+        calculation.usesFunctional
+            ? (spin > 0 ? "UKS" : "RKS")
+            : (spin > 0 ? "ROHF" : "RHF")
     }
 
     // MARK: - Charge and spin
@@ -534,12 +640,56 @@ final class AppModel: ObservableObject {
             geometry = nil
             return
         }
+        await loadGeometry(atoms: spec)
+    }
+
+    /// Parses ``atoms`` and publishes the geometry.
+    ///
+    /// Separate from ``refreshGeometry`` because the history detail view
+    /// rebuilds a saved picture from the entry's own atom notation, which is not
+    /// necessarily what the builder currently holds.
+    func loadGeometry(atoms: String) async {
+        let spec = atoms.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spec.isEmpty else {
+            geometry = nil
+            return
+        }
         do {
             geometry = try await engine.geometry(atoms: spec)
         } catch {
             geometry = nil
             report(error)
         }
+    }
+
+    /// Replays a saved orbital view through the engine.
+    ///
+    /// Returns the surface rather than publishing it: a history entry is a
+    /// picture of the past, and assigning it to ``orbitalSurface`` would make
+    /// the live orbital viewer show it as if it were the current selection.
+    func rebuildOrbitalView(_ record: OrbitalViewRecord, entry: HistoryEntry) async throws -> OrbitalSurface {
+        try await engine.orbitalSurface(
+            atoms: entry.atoms,
+            index: record.index,
+            source: record.source,
+            method: record.method,
+            basis: entry.basis,
+            xc: entry.functional ?? "b3lyp",
+            charge: entry.charge,
+            spin: entry.spin,
+            isovalue: record.isovalue)
+    }
+
+    /// Replays a saved density view through the engine.
+    func rebuildDensityView(_ record: DensityViewRecord, entry: HistoryEntry) async throws -> DensitySurface {
+        try await engine.densitySurface(
+            atoms: entry.atoms,
+            method: record.method,
+            basis: entry.basis,
+            xc: entry.functional ?? "b3lyp",
+            charge: entry.charge,
+            spin: entry.spin,
+            levels: record.levels)
     }
 
     /// Runs the selected calculation.
@@ -591,6 +741,10 @@ final class AppModel: ObservableObject {
             orbitalSurface = nil
             pendingOrbital = nil
             pendingOrbitalSource = nil
+            // The density cloud belongs to the old wavefunction too, and the
+            // screen refetches it when reopened.
+            densityRequestToken += 1
+            densitySurface = nil
             logText = output.log
             screen = .results
             recordHistory(kind: historyKind(for: calculation),
@@ -673,6 +827,16 @@ final class AppModel: ObservableObject {
             if !surface.hasGeometry {
                 log("\(surface.label): no envelope at this isovalue; raise it to shrink the surface")
             }
+            // Recorded only once the surface is in hand, and only when the
+            // *selection* changed: the isovalue slider refetches the same
+            // orbital many times while it is dragged, and one entry per step
+            // would bury the rest of the history.  A refinement of the picture
+            // already on record is not a new thing to record.
+            let key = "\(chosen)|\(index)"
+            if key != lastRecordedOrbitalView {
+                lastRecordedOrbitalView = key
+                recordOrbitalView(surface)
+            }
         } catch {
             guard token == orbitalRequestToken else { return }
             report(error)
@@ -715,6 +879,75 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard token == orbitalRedrawToken else { return }
             await redrawOrbital()
+        }
+    }
+
+    /// Fetches the electron density as nested shells and shows it in 3D.
+    ///
+    /// Kept out of ``run`` for the same reason the orbital surface is: it is a
+    /// second round trip, and the mesh is only wanted when the Density screen is
+    /// opened.  A run that never visits that screen never pays for it.
+    func loadDensitySurface() async {
+        guard result != nil else { return }
+        if geometry == nil { await refreshGeometry() }
+
+        // Same request-token discipline as the orbital viewer: a slow earlier
+        // request must not overwrite the answer the user is waiting for.
+        densityRequestToken += 1
+        let token = densityRequestToken
+        isLoadingDensity = true
+        defer {
+            if token == densityRequestToken { isLoadingDensity = false }
+        }
+        do {
+            let surface = try await engine.densitySurface(
+                atoms: atomSpec,
+                method: calculation.usesFunctional
+                    ? (spin > 0 ? "UKS" : "RKS") : (spin > 0 ? "ROHF" : "RHF"),
+                basis: basis,
+                xc: functional,
+                charge: charge,
+                spin: spin,
+                levels: densityLevels)
+            guard token == densityRequestToken else { return }
+            densitySurface = surface
+            if !surface.hasGeometry {
+                log("density: no shell produced geometry at these levels")
+            }
+            // Recorded once per distinct view, not once per fetch: reopening
+            // the screen or stepping the detail control back and forth would
+            // otherwise fill the history with the same cloud.
+            let key = surface.levels.map { String(format: "%.6f", $0) }.joined(separator: ",")
+            if key != lastRecordedDensityView {
+                lastRecordedDensityView = key
+                recordDensityView(surface)
+            }
+        } catch {
+            guard token == densityRequestToken else { return }
+            report(error)
+        }
+    }
+
+    /// Switches which density levels the picture is drawn at and refetches it.
+    func selectDensityLevels(_ levels: [Double]) {
+        densityLevels = levels
+        densityRequestToken += 1
+        densitySurface = nil
+        Task { await loadDensitySurface() }
+    }
+
+    /// Refetches the density once the detail control has settled.
+    ///
+    /// The picker is discrete, so unlike the isovalue slider there is no stream
+    /// of intermediate values to coalesce; the deferral is here so a rapid
+    /// sequence of choices issues only the last one.
+    func scheduleDensityRedraw() {
+        densityRedrawToken += 1
+        let token = densityRedrawToken
+        Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard token == densityRedrawToken else { return }
+            await loadDensitySurface()
         }
     }
 

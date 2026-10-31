@@ -278,6 +278,11 @@ struct HistoryDetailView: View {
 /// Rebuilt from the stored payload, so a saved run and the run that produced it
 /// show the same numbers. The optimisation panel drops its two buttons: acting
 /// on a run from the past would overwrite the geometry being worked on.
+///
+/// A view entry -- an orbital surface or a density cloud -- has no result
+/// panels, because the entry stores only the recipe and not the mesh.  It is
+/// rebuilt by ``HistoryViewerView``, which asks the engine for the same picture
+/// again.
 struct HistoryResultPanels: View {
     let entry: HistoryEntry
 
@@ -287,8 +292,123 @@ struct HistoryResultPanels: View {
             OptimisationPanel(optimisation: OptimisationResult(entry.payload))
         case .scan:
             BondScanPanel(scan: BondScanResult(entry.payload))
+        case .orbitals, .density:
+            HistoryViewerView(entry: entry)
         default:
             ScfResultPanels(result: ScfResult(entry.payload))
+        }
+    }
+}
+
+/// Rebuilds the 3D picture a view entry recorded.
+///
+/// The mesh was deliberately left out of the entry -- it is megabytes against a
+/// hundred-entry cap -- so opening an entry replays its recipe through the
+/// engine and shows the surface that comes back.  That is a real round trip and
+/// it can fail, so the three states are all shown: rebuilding, drawn, or a
+/// message saying why it could not be drawn.  Silently showing an empty panel
+/// would read as a picture with no geometry rather than as a failed rebuild.
+struct HistoryViewerView: View {
+    @EnvironmentObject private var model: AppModel
+
+    let entry: HistoryEntry
+
+    @State private var surface: OrbitalSurface?
+    @State private var cloud: DensitySurface?
+    @State private var errorText: String?
+    @State private var isRebuilding = false
+
+    /// The recipe stored with the entry, or nil when the payload is not one.
+    private var record: ViewRecord? { ViewRecord(entry.payload) }
+
+    var body: some View {
+        Panel(title: L("history.view.rebuilt"), systemImage: "cube.transparent") {
+            if let record = record {
+                Text(LF("history.view.recipe", record.method))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if isRebuilding {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text(L("history.view.rebuilding"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let errorText = errorText {
+                    Text(errorText)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                MoleculeView(
+                    geometry: model.geometry,
+                    elementTable: model.elements,
+                    surface: surface,
+                    showsOrbital: true,
+                    orbitalOpacity: MoleculeLayout.defaultOrbitalOpacity,
+                    density: cloud,
+                    showsDensity: true,
+                    densityOpacity: MoleculeLayout.defaultDensityOpacity)
+                    .frame(minHeight: 320)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                detail
+            } else {
+                Text(L("history.view.unreadable"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task { await rebuild() }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if let surface = surface {
+            MetricRow(label: L("orbitals.viewer.orbital"),
+                      value: "\(surface.label) · "
+                          + String(format: "%.5f", surface.orbitalEnergy) + " Ha")
+            MetricRow(label: L("orbitals.viewer.surface"),
+                      value: LF("orbitals.viewer.surfaceDetail", surface.triangleCount,
+                               String(format: "%.4f", surface.isovalue)))
+        }
+        if let cloud = cloud {
+            MetricRow(label: L("density.method"), value: cloud.method)
+            MetricRow(label: L("density.levels"),
+                      value: cloud.levels.map { String(format: "%.3f", $0) }.joined(separator: ", "))
+            MetricRow(label: L("density.surface"),
+                      value: LF("density.surfaceDetail", cloud.triangleCount))
+        }
+    }
+
+    /// Replays the recipe through the engine.
+    ///
+    /// The geometry has to be loaded first: an entry opened from a fresh launch
+    /// has no molecule in the model, and the 3D scene needs one to draw the
+    /// surface around.  The entry's own atom notation is used rather than
+    /// whatever is in the builder, so the picture matches the record.
+    private func rebuild() async {
+        guard let record = record, record.isReplayable else { return }
+        isRebuilding = true
+        errorText = nil
+        defer { isRebuilding = false }
+        do {
+            if model.geometry == nil || model.atomSpec != entry.atoms {
+                await model.loadGeometry(atoms: entry.atoms)
+            }
+            switch record {
+            case .orbital(let orbital):
+                surface = try await model.rebuildOrbitalView(orbital, entry: entry)
+            case .density(let density):
+                cloud = try await model.rebuildDensityView(density, entry: entry)
+            }
+        } catch {
+            errorText = error.localizedDescription
         }
     }
 }

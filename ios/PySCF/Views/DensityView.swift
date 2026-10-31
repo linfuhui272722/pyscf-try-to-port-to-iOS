@@ -1,12 +1,30 @@
 // DensityView.swift
 //
-// Renders a slice of the electron-density cube the engine returns for
-// ``include: ["grid"]``.  The cube is flattened C-order over (nx, ny, nz), so a
-// fixed z index yields one xy-plane that maps directly onto a bitmap.
+// The Density screen: the molecule in 3D with its electron density drawn around
+// it as nested isosurfaces, coloured along one ramp.
+//
+// This is the same picture the orbital viewer draws -- a translucent envelope
+// over the ball-and-stick model -- but for the total density rather than a
+// single orbital.  The density is a positive field, so there are no two phases
+// to colour: instead each absolute level the engine drew is a separate shell,
+// and the ramp from red (densest) through orange, yellow and green to blue
+// (most diffuse) is what turns the nesting into a readable gradient.
+//
+// The meshes come from ``PySCFEngine/densitySurface`` on demand rather than
+// riding along with the run, so a run that never opens this screen never pays
+// for the surface.
+//
+// ``DensitySliceView`` below is the older plane-through-the-cube renderer.  It
+// is kept because the cube still arrives with a run when the builder's "Density
+// cube" switch is on, and a slice answers a different question -- what the
+// density looks like on a cut plane -- which the shells cannot.
 
 import SwiftUI
 
 /// Heatmap of a single plane through the density cube.
+///
+/// The cube is flattened C-order over (nx, ny, nz), so a fixed z index yields
+/// one xy-plane that maps directly onto a bitmap.
 struct DensitySliceView: View {
     let grid: DensityGrid
     /// Plane index along the fastest-varying axis (z).
@@ -67,59 +85,35 @@ struct DensitySliceView: View {
         }
     }
 
-    /// Maps a normalised intensity to an RGB tuple (dark blue → cyan → yellow → red).
-    private static func colour(for intensity: Double) -> (UInt8, UInt8, UInt8, UInt8) {
+    /// Maps a normalised intensity to an RGB tuple, through the shared ramp.
+    ///
+    /// Routed through ``DensityPalette`` rather than carrying its own stops, so
+    /// the slice and the 3D shells colour the same value the same way.  The
+    /// slice runs dark at zero, which the 3D ramp does not need to: a shell only
+    /// exists where the density is above a level, while the slice draws the
+    /// whole plane including the empty space between molecules.
+    static func colour(for intensity: Double) -> (UInt8, UInt8, UInt8, UInt8) {
         let value = min(max(intensity, 0), 1)
-        let stops: [(Double, (Double, Double, Double))] = [
-            (0.00, (0.02, 0.02, 0.12)),
-            (0.25, (0.05, 0.25, 0.75)),
-            (0.50, (0.10, 0.75, 0.80)),
-            (0.75, (0.95, 0.85, 0.20)),
-            (1.00, (0.95, 0.20, 0.10)),
-        ]
-        for index in 1..<stops.count where value <= stops[index].0 {
-            let (lowT, lowC) = stops[index - 1]
-            let (highT, highC) = stops[index]
-            let t = (value - lowT) / max(highT - lowT, 1e-9)
-            let r = lowC.0 + (highC.0 - lowC.0) * t
-            let g = lowC.1 + (highC.1 - lowC.1) * t
-            let b = lowC.2 + (highC.2 - lowC.2) * t
-            return (UInt8(r * 255), UInt8(g * 255), UInt8(b * 255), 255)
-        }
-        let last = stops[stops.count - 1].1
-        return (UInt8(last.0 * 255), UInt8(last.1 * 255), UInt8(last.2 * 255), 255)
+        if value <= 0.001 { return (2, 2, 12, 255) }
+        let rgb = DensityPalette.colour(at: value)
+        return (UInt8(rgb.red * 255), UInt8(rgb.green * 255), UInt8(rgb.blue * 255), 255)
     }
 }
 
-/// Slice selector plus the rendered plane.
+/// The 3D density picture: the molecule with its density cloud around it.
 struct DensityScreen: View {
     @EnvironmentObject private var model: AppModel
-    @State private var zIndex: Double = 0
-
-    private var grid: DensityGrid? { model.result?.grid }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                if let grid = grid, grid.shape.count == 3 {
-                    Panel(title: L("density.title"), systemImage: "square.grid.3x3") {
-                        DensitySliceView(grid: grid, zIndex: Int(zIndex))
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(LF("density.plane", Int(zIndex) + 1, grid.shape[2]))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Slider(value: $zIndex, in: 0...Double(max(grid.shape[2] - 1, 1)), step: 1)
-                        }
-                        Divider()
-                        MetricRow(label: L("density.cube"), value: "\(grid.shape[0]) × \(grid.shape[1]) × \(grid.shape[2])")
-                        MetricRow(label: L("density.voxels"), value: "\(grid.count)")
-                        MetricRow(label: L("density.peak"), value: String(format: "%.4f", grid.values.max() ?? 0))
-                        MetricRow(label: L("density.origin"), value: grid.origin.map { String(format: "%.2f", $0) }.joined(separator: ", "))
-                        MetricRow(label: L("density.step"), value: grid.step.map { String(format: "%.3f", $0) }.joined(separator: ", "))
-                    }
+                if model.result != nil {
+                    cloudPanel
                 } else {
-                    Panel(title: L("density.title"), systemImage: "square.grid.3x3") {
-                        DensitySliceView(grid: DensityGrid(JSONObject([:])), zIndex: 0)
+                    Panel(title: L("density.title"), systemImage: "circle.hexagongrid") {
+                        Text(L("density.empty"))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -127,5 +121,178 @@ struct DensityScreen: View {
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle(L("screen.density"))
+        .task {
+            // The cloud is fetched when the screen appears rather than with the
+            // run: it is a second round trip, and a run that never opens this
+            // screen should not pay for the mesh.
+            if model.densitySurface == nil, !model.isLoadingDensity {
+                await model.loadDensitySurface()
+            }
+        }
+    }
+
+    // MARK: - Panels
+
+    private var cloudPanel: some View {
+        Panel(title: L("density.title"), systemImage: "circle.hexagongrid") {
+            Text(L("density.blurb"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            MoleculeView(
+                geometry: model.geometry,
+                elementTable: model.elements,
+                density: model.densitySurface,
+                showsDensity: model.showsDensity,
+                densityOpacity: model.densityOpacity)
+                .frame(minHeight: 340)
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            notices
+
+            Group {
+                detailControls
+                opacityControls
+            }
+
+            surfaceDetail
+            legend
+        }
+    }
+
+    /// What the screen has to say about the request in flight, or the cloud on
+    /// screen.  Grouped because the panel is at the ten-view builder limit.
+    @ViewBuilder
+    private var notices: some View {
+        if model.isLoadingDensity {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text(L("density.loading"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        if let message = model.errorMessage {
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        // A cloud the grid could not contain is cut off at the box wall, which
+        // reads as the density filling the whole view rather than as a cloud
+        // around the molecule.  Say so rather than let it look like a shape.
+        if let surface = model.densitySurface, surface.clipped {
+            Text(L("density.clipped"))
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let surface = model.densitySurface, !surface.hasGeometry {
+            Text(L("density.emptyShells"))
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// How many shells the picture is drawn with.
+    ///
+    /// A discrete choice rather than a slider: each step is a full mean-field
+    /// solve and a fresh set of meshes, so a continuous control would queue
+    /// requests faster than they can be answered.
+    @ViewBuilder
+    private var detailControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L("density.detail"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker(L("density.detail"), selection: Binding(
+                get: { model.densityDetailIndex },
+                set: { index in
+                    model.selectDensityLevels(AppModel.densityLevelChoices[index].levels)
+                }
+            )) {
+                ForEach(Array(AppModel.densityLevelChoices.enumerated()), id: \.offset) { index, choice in
+                    Text(L(choice.label)).tag(index)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Text(LF("density.detail.shells", model.densityLevels.count))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// The cloud's transparency, and whether it is drawn at all.
+    @ViewBuilder
+    private var opacityControls: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(L("density.show"), isOn: $model.showsDensity)
+                .font(.caption)
+            HStack(spacing: 8) {
+                Image(systemName: "circle.dotted")
+                    .foregroundStyle(.secondary)
+                Slider(
+                    value: $model.densityOpacity,
+                    in: MoleculeLayout.minimumDensityOpacity...MoleculeLayout.maximumDensityOpacity)
+                Image(systemName: "circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(!model.showsDensity)
+        }
+    }
+
+    /// The numbers for the cloud on screen.
+    @ViewBuilder
+    private var surfaceDetail: some View {
+        if let surface = model.densitySurface {
+            MetricRow(label: L("density.method"), value: surface.method)
+            MetricRow(
+                label: L("density.cube"),
+                value: "\(surface.gridPointsPerAxis)³ · "
+                    + String(format: "%.3f", surface.gridStep) + " Å")
+            MetricRow(
+                label: L("density.surface"),
+                value: LF("density.surfaceDetail", surface.triangleCount))
+            MetricRow(
+                label: L("density.peak"),
+                value: String(format: "%.4f e/bohr³", surface.peak))
+            MetricRow(
+                label: L("density.levels"),
+                value: surface.levels.map { String(format: "%.3f", $0) }.joined(separator: ", "))
+            Text(L("density.note"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The colour key: which shell is which density, densest first.
+    @ViewBuilder
+    private var legend: some View {
+        if let surface = model.densitySurface, !surface.shells.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L("density.legend"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                // Descending level, so the list reads from the densest core down
+                // to the diffuse cloud -- the same order the ramp runs.
+                ForEach(Array(surface.shells.reversed().enumerated()), id: \.offset) { _, shell in
+                    HStack(spacing: 8) {
+                        let colour = DensityPalette.colour(at: surface.palettePosition(of: shell))
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color(red: colour.red, green: colour.green, blue: colour.blue))
+                            .frame(width: 22, height: 12)
+                        Text(String(format: "%.3f e/bohr³", shell.level))
+                            .font(.caption.monospacedDigit())
+                        Spacer(minLength: 8)
+                        Text(LF("density.legend.triangles", shell.triangleCount))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
     }
 }

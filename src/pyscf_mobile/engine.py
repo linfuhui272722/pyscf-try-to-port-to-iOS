@@ -689,11 +689,14 @@ def _localized_column(mf, atoms: list[dict], kind: str, index: int) -> tuple[np.
     return coefficients[:, index], spin
 
 
-def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: float = 1.6) -> dict:
-    """Evaluate the total electron density on a coarse cubic grid.
+def _density_values(mf, atoms: list[dict], points_per_axis: int,
+                    padding: float) -> tuple[np.ndarray, list[float], list[float]]:
+    """Evaluate the total electron density on a cubic grid in ångström.
 
-    The UI uses this to draw an isosurface; the grid is deliberately small so
-    that the JSON payload stays phone friendly.
+    Shared by the density cube and the density surface so both sample the same
+    box the same way.  ``rho(r) = sum_ij ao_i(r) D_ij ao_j(r)``, evaluated
+    directly so the helper works for both RHF and UHF/UKS references without
+    API-shape surprises.
     """
     coords = geometry.atoms_to_coords(atoms)
     lo = coords.min(axis=0) - padding
@@ -704,8 +707,6 @@ def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: flo
     dm = np.asarray(mf.make_rdm1(), dtype=float)
     if dm.ndim == 3:  # unrestricted references carry alpha/beta blocks
         dm = dm[0] + dm[1]
-    # rho(r) = sum_ij ao_i(r) D_ij ao_j(r); evaluated directly so the helper
-    # works for both RHF and UHF/UKS references without API-shape surprises.
     # Same Bohr/ångström conversion as ``_orbital_values``: the grid is in
     # ångström and ``eval_gto`` wants Bohr.  Evaluated in slabs for the same
     # memory reason: the dense AO matrix for the whole grid is what peaks.
@@ -715,11 +716,24 @@ def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: flo
     for start in range(0, flat.shape[0], chunk):
         ao = mf.mol.eval_gto("GTOval", flat[start:start + chunk])
         rho[start:start + chunk] = np.einsum("gi,ij,gj->g", ao, dm, ao)
+    values = rho.reshape(points_per_axis, points_per_axis, points_per_axis)
+    origin = [float(lo[i]) for i in range(3)]
+    step = [float((hi[i] - lo[i]) / (points_per_axis - 1)) for i in range(3)]
+    return values, origin, step
+
+
+def _density_grid(mf, atoms: list[dict], points_per_axis: int = 22, padding: float = 1.6) -> dict:
+    """Evaluate the total electron density on a coarse cubic grid.
+
+    The UI uses this to draw an isosurface; the grid is deliberately small so
+    that the JSON payload stays phone friendly.
+    """
+    values, origin, step = _density_values(mf, atoms, points_per_axis, padding)
     return {
         "shape": [points_per_axis] * 3,
-        "origin": [round(float(lo[i]), 6) for i in range(3)],
-        "step": [round(float((hi[i] - lo[i]) / (points_per_axis - 1)), 6) for i in range(3)],
-        "values": [round(float(v), 8) for v in np.asarray(rho).ravel()],
+        "origin": [round(v, 6) for v in origin],
+        "step": [round(v, 6) for v in step],
+        "values": [round(float(v), 8) for v in np.asarray(values).ravel()],
     }
 
 
@@ -1602,6 +1616,119 @@ def run_orbital_surface(params: dict) -> dict:
     }
 
 
+#: The absolute density levels, in electrons per cubic Bohr, that the 3D
+#: density picture draws as nested shells.  Absolute rather than a fraction of
+#: the peak, unlike the orbital viewer: the peak density sits on the nucleus and
+#: varies by orders of magnitude between elements and bases, so a fraction of it
+#: would draw a picture whose meaning changed with the molecule.  A level here
+#: is the familiar "is that a bond or a lone pair" contour a chemistry textbook
+#: uses.  0.002 e/bohr^3 wraps the molecule in a cloud; 1.0 e/bohr^3 is close
+#: enough to the nuclei to sit inside the cores.
+DENSITY_LEVELS = (0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)
+
+#: How far past the atoms the density box starts, and the most it may grow while
+#: chasing the outermost shell.  A diffuse anion's cloud can reach several
+#: ångström out; past this the box is large enough that the spacing has coarsened
+#: more than the extra completeness is worth.
+_DENSITY_PADDING = 3.0
+_MAX_DENSITY_PADDING = 9.0
+
+#: Ceiling on the density surface's sampling resolution, for the same reason as
+#: the orbital viewer's: the cube is cubic in this number, so it bounds the peak
+#: memory and time of the RPC on a phone.
+_MAX_DENSITY_POINTS_PER_AXIS = 56
+
+
+def run_density_surface(params: dict) -> dict:
+    """The total electron density as nested isosurfaces, for the 3D viewer.
+
+    The density is a positive field, so it has no two phases to colour the way
+    an orbital does.  What it has instead is a range of values, and drawing a
+    shell at each of several absolute levels turns that range into depth: the
+    innermost shell (the highest level, where the density is greatest) is the
+    core region and the outermost is the cloud that reaches furthest out.  The
+    Swift side colours the shells along one ramp, so the picture reads as "this
+    much density" rather than as a set of unrelated surfaces.
+
+    ``levels`` overrides ``DENSITY_LEVELS``; a request may ask for fewer shells,
+    which is the knob the UI's detail slider turns.
+
+    The box is fitted to the lowest level actually drawn, exactly as the orbital
+    viewer fits its box to its isosurface: a shell that meets the box wall is
+    closed against that wall by the marching step and reads as a shell spanning
+    the whole box rather than as a cloud around the molecule.  The resolution is
+    held at the atoms'-box spacing as the box grows, up to the same ceiling.
+
+    Vertices are in absolute ångström, in the same frame as the atoms, so the
+    Swift side adds the shells to the ball-and-stick scene without a transform.
+    """
+    start = time.perf_counter()
+    mf, atoms, basis, method, _log = _run_mean_field(params)
+    requested = params.get("levels")
+    if requested:
+        levels = sorted({float(level) for level in requested if float(level) > 0.0})
+    else:
+        levels = list(DENSITY_LEVELS)
+    if not levels:
+        raise ValueError("levels must contain at least one positive value")
+    points = int(params.get("pointsPerAxis", 40))
+    if points < 8:
+        raise ValueError(f"pointsPerAxis must be at least 8, not {points}")
+
+    # The spacing of the box that fits the atoms, which the resolution should
+    # stay at as the box grows to contain the outermost shell.
+    span = float(np.ptp(geometry.atoms_to_coords(atoms), axis=0).max()) + 2.0 * _DENSITY_PADDING
+    target_step = span / max(points - 1, 1)
+
+    padding = _DENSITY_PADDING
+    while True:
+        width = float(np.ptp(geometry.atoms_to_coords(atoms), axis=0).max()) + 2.0 * padding
+        grid_points = min(int(np.ceil(width / target_step)) + 1, _MAX_DENSITY_POINTS_PER_AXIS)
+        grid_points = max(grid_points, points)
+        values, origin, step = _density_values(mf, atoms, grid_points, padding)
+        peak = float(values.max())
+        if peak <= 0.0:
+            raise ValueError("the density is zero everywhere on the grid")
+        outermost = min(levels)
+        faces = (values[0], values[-1], values[:, 0], values[:, -1],
+                 values[:, :, 0], values[:, :, -1])
+        if max(float(np.abs(face).max()) for face in faces) < outermost:
+            break
+        if padding >= _MAX_DENSITY_PADDING:
+            break
+        padding = min(padding * 1.5, _MAX_DENSITY_PADDING)
+    clipped = max(float(np.abs(face).max()) for face in faces) >= outermost
+
+    shells = []
+    for level in levels:
+        mesh = orbital_surface.isosurface(
+            values, values.shape, np.asarray(origin), np.asarray(step), level
+        )
+        shells.append({
+            "level": level,
+            "fraction": round(level / peak, 8),
+            **mesh,
+        })
+
+    wall_ms = (time.perf_counter() - start) * 1000.0
+    return {
+        "ok": True,
+        "method": f"{method}/{basis}",
+        "energy": round(float(mf.e_tot), 10),
+        "wallTimeMs": round(wall_ms, 3),
+        "nElectrons": int(mf.mol.nelectron),
+        "nBasis": int(mf.mol.nao_nr()),
+        "peak": round(peak, 8),
+        "levels": levels,
+        "pointsPerAxis": points,
+        "gridPointsPerAxis": int(values.shape[0]),
+        "gridStep": round(max(float(v) for v in step), 6),
+        "gridOrigin": [round(float(v), 6) for v in origin],
+        "clipped": clipped,
+        "shells": shells,
+    }
+
+
 def _source_valence_indices(mf, source: str) -> list[int]:
     """Which orbitals of ``source`` are valence, as indices into that source.
 
@@ -1702,6 +1829,7 @@ def dispatch(method: str, params: dict) -> dict:
         "er": lambda params: run_intrinsic_localization({**params, "kind": "er"}),
         "optimise": run_geometry_optimisation,
         "orbital_surface": run_orbital_surface,
+        "density_surface": run_density_surface,
     }
     if method not in handlers:
         raise ValueError(f"unknown method: {method!r}")

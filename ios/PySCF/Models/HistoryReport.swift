@@ -44,6 +44,8 @@ enum HistoryReport {
             lines.append(contentsOf: optimisationSections(entry))
         case .scan:
             lines.append(contentsOf: scanSections(entry))
+        case .orbitals, .density:
+            lines.append(contentsOf: viewSections(entry))
         default:
             lines.append(contentsOf: scfSections(entry))
         }
@@ -90,6 +92,34 @@ enum HistoryReport {
     }
 
     // MARK: - Per-kind sections
+
+    /// The recipe of a saved 3D picture.
+    ///
+    /// The mesh is not in the entry, so the report cannot describe the surface
+    /// that was drawn -- only what was asked for.  That is still the useful
+    /// part: it is what would have to be replayed to get the same picture, and
+    /// the numbers that were on screen (the level, the isovalue) are in the
+    /// entry's summary line above.
+    private static func viewSections(_ entry: HistoryEntry) -> [String] {
+        guard let record = ViewRecord(entry.payload) else {
+            return [section("Picture"), "Not recorded.", ""]
+        }
+        var lines: [String] = []
+        lines.append(section("Picture"))
+        lines.append(row("Reference", record.method))
+        switch record {
+        case .orbital(let orbital):
+            lines.append(row("Orbital", orbital.label))
+            lines.append(row("Index", String(orbital.index)))
+            lines.append(row("Source", orbital.source))
+            lines.append(row("Isovalue", String(format: "%.6f", orbital.isovalue)))
+        case .density(let density):
+            lines.append(row("Levels", density.levels
+                .map { String(format: "%.4f", $0) }.joined(separator: ", ")))
+        }
+        lines.append("")
+        return lines
+    }
 
     private static func scfSections(_ entry: HistoryEntry) -> [String] {
         let result = ScfResult(entry.payload)

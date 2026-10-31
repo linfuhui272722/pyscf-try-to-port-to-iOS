@@ -89,3 +89,42 @@ struct OrbitalMeshPair {
 
     var isEmpty: Bool { positive == nil && negative == nil }
 }
+
+/// One density shell as a mesh, with the ramp position that colours it.
+///
+/// The shell meshes are centred on the same point the molecule is, exactly as
+/// the orbital lobes are, so the cloud sits around the atoms rather than beside
+/// them.
+struct DensityShellMesh {
+    /// The ramp position, 0 for the densest shell and 1 for the diffuse one.
+    let palettePosition: Double
+    let level: Double
+    let mesh: OrbitalMesh
+}
+
+/// Every shell of one density surface, ready to add to the molecule scene.
+struct DensityMeshSet {
+    let shells: [DensityShellMesh]
+    /// How far the outermost shell reaches from the origin, so the camera can
+    /// frame the cloud as well as the atoms.
+    let boundingRadius: Double
+
+    init(surface: DensitySurface, centreOfMass: [Double]) {
+        var built: [DensityShellMesh] = []
+        var radius = 0.0
+        for shell in surface.shells {
+            guard let mesh = OrbitalMesh(phase: shell.mesh, centredOn: centreOfMass) else {
+                continue
+            }
+            built.append(DensityShellMesh(
+                palettePosition: surface.palettePosition(of: shell),
+                level: shell.level,
+                mesh: mesh))
+            radius = max(radius, mesh.boundingRadius)
+        }
+        shells = built
+        boundingRadius = radius
+    }
+
+    var isEmpty: Bool { shells.isEmpty }
+}

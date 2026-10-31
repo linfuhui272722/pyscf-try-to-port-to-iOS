@@ -1036,6 +1036,8 @@ struct OrbitalSurface {
     /// into that source's own orbital list.
     var isCore: Bool
     var valenceOrbitals: [Int]
+    /// Wall-clock time the engine reported for the surface, in milliseconds.
+    var wallTimeMs: Double
 
     init(_ json: JSONObject) {
         source = json.value("source") ?? "mo"
@@ -1054,12 +1056,89 @@ struct OrbitalSurface {
         composition = json.object("composition").map(OrbitalComposition.init)
         isCore = json.value("isCore") as Bool? ?? false
         valenceOrbitals = json.integers("valenceOrbitals")
+        wallTimeMs = json.number("wallTimeMs") ?? 0
     }
 
     var triangleCount: Int { positive.triangleCount + negative.triangleCount }
     var isOccupied: Bool { occupation > 0.5 }
     /// Whether either lobe produced any geometry.
     var hasGeometry: Bool { !positive.isEmpty || !negative.isEmpty }
+}
+
+/// One shell of the electron density: the surface where the density equals one
+/// absolute level.
+///
+/// Unlike an orbital there is no sign to separate, so a shell is a single mesh
+/// rather than a pair of phases.  ``level`` is in electrons per cubic Bohr and
+/// ``fraction`` is that level over the field's peak, carried so the UI can label
+/// the shell without the peak.
+struct DensityShell {
+    var level: Double
+    var fraction: Double
+    var mesh: OrbitalPhase
+
+    var isEmpty: Bool { mesh.isEmpty }
+    var triangleCount: Int { mesh.triangleCount }
+
+    init(_ json: JSONObject) {
+        level = json.number("level") ?? 0
+        fraction = json.number("fraction") ?? 0
+        mesh = OrbitalPhase(json)
+    }
+}
+
+/// The total electron density as nested isosurfaces, for the 3D viewer.
+///
+/// The shells are ordered by ascending level, so the first is the diffuse cloud
+/// around the molecule and the last is the densest region at the nuclei.  That
+/// order is what ``DensityPalette`` maps onto its ramp.
+struct DensitySurface {
+    var method: String
+    var energy: Double
+    var wallTimeMs: Double
+    var nElectrons: Int
+    var nBasis: Int
+    /// The largest density on the sampled box, in electrons per cubic Bohr.
+    var peak: Double
+    /// The absolute levels the shells were drawn at, ascending.
+    var levels: [Double]
+    /// The resolution asked for, and the one actually used once the box grew.
+    var pointsPerAxis: Int
+    var gridPointsPerAxis: Int
+    /// The coarsest of the three axis steps, in ångström.
+    var gridStep: Double
+    var gridOrigin: [Double]
+    /// True when the sampling box was too small to contain the outermost shell,
+    /// so that shell is cut off by the box rather than closed by the field.
+    var clipped: Bool
+    var shells: [DensityShell]
+
+    init(_ json: JSONObject) {
+        method = json.value("method") ?? ""
+        energy = json.number("energy") ?? 0
+        wallTimeMs = json.number("wallTimeMs") ?? 0
+        nElectrons = json.integer("nElectrons") ?? 0
+        nBasis = json.integer("nBasis") ?? 0
+        peak = json.number("peak") ?? 0
+        levels = json.doubles("levels")
+        pointsPerAxis = json.integer("pointsPerAxis") ?? 0
+        gridPointsPerAxis = json.integer("gridPointsPerAxis") ?? 0
+        gridStep = json.number("gridStep") ?? 0
+        gridOrigin = json.doubles("gridOrigin")
+        clipped = json.value("clipped") as Bool? ?? false
+        shells = json.objects("shells").map(DensityShell.init)
+    }
+
+    /// Whether any shell produced geometry.
+    var hasGeometry: Bool { shells.contains { !$0.isEmpty } }
+
+    /// Total triangles across the shells, for the panel's detail line.
+    var triangleCount: Int { shells.reduce(0) { $0 + $1.triangleCount } }
+
+    /// The ramp position of one shell, 0 for the densest and 1 for the diffuse.
+    func palettePosition(of shell: DensityShell) -> Double {
+        DensityPalette.position(of: shell.level, among: levels)
+    }
 }
 
 /// The shared result shape returned by scf/dft/mp2/ccsd.

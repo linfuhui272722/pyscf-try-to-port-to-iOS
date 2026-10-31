@@ -413,6 +413,85 @@ do {
            "a bundled name ends in .txt")
 }
 
+print("view recipes")
+do {
+    // A view entry stores the recipe for a picture rather than the mesh, so the
+    // round trip is what decides whether opening the entry rebuilds the picture
+    // that was drawn. A wrong index or level still lists and still opens - it
+    // just shows the wrong surface, which nothing on the device reports.
+    let orbital = OrbitalViewRecord(
+        index: 4, source: "mo", isovalue: 0.05, label: "MO 5", method: "RHF")
+    let orbitalBack = OrbitalViewRecord(json: orbital.encoded())
+    expect(orbitalBack != nil, "an orbital recipe decodes")
+    expect(orbitalBack?.index == 4, "the orbital index round trips")
+    expect(orbitalBack?.source == "mo", "the orbital source round trips")
+    expect(abs((orbitalBack?.isovalue ?? 0) - 0.05) < 1e-12, "the isovalue round trips")
+    expect(orbitalBack?.method == "RHF", "the reference round trips")
+
+    let density = DensityViewRecord(levels: [0.002, 0.05, 1.0], method: "RKS")
+    let densityBack = DensityViewRecord(json: density.encoded())
+    expect(densityBack != nil, "a density recipe decodes")
+    expect(densityBack?.levels == [0.002, 0.05, 1.0], "the levels round trip")
+    expect(densityBack?.method == "RKS", "the density reference round trips")
+
+    // The kind is told from the payload's own marker, not from the entry, so a
+    // payload and its label cannot disagree about what it holds.
+    expect(ViewRecord(orbital.encoded())?.method == "RHF", "a view record reads its reference")
+    if case .orbital = ViewRecord(orbital.encoded()) {
+        expect(true, "an orbital payload decodes as an orbital")
+    } else {
+        expect(false, "an orbital payload decodes as an orbital")
+    }
+    if case .density = ViewRecord(density.encoded()) {
+        expect(true, "a density payload decodes as a density")
+    } else {
+        expect(false, "a density payload decodes as a density")
+    }
+    expect(ViewRecord(JSONObject([:])) == nil, "an unrelated payload decodes as nothing")
+
+    // The stored recipe must stay small: the whole point of not keeping the
+    // mesh is that an entry is tens of kilobytes, not megabytes.
+    for record in [orbital.encoded(), density.encoded()] {
+        let data = try? JSONSerialization.data(withJSONObject: record.raw)
+        expect((data?.count ?? .max) < 4096,
+               "a view recipe is small (\(data?.count ?? -1) bytes)")
+    }
+}
+
+print("view entries list and export")
+do {
+    // A view entry has to survive the store and read back as a view, or opening
+    // it would render result panels from a payload that has no energy in it.
+    let orbital = OrbitalViewRecord(
+        index: 4, source: "mo", isovalue: 0.05, label: "MO 5", method: "RHF")
+    let entry = HistoryEntry(
+        id: "view-orbital", date: Date(timeIntervalSince1970: 1_700_000_100),
+        kind: .orbitals, method: "MO 5", basis: "sto-3g",
+        atoms: "O 0 0 0; H 0 0 0.96; H 0 0.9 -0.3",
+        energy: -75.0, converged: true, wallTimeMs: 12,
+        summary: "mo at isovalue 0.0500", payload: orbital.encoded())
+
+    expect(entry.kind.isView, "an orbital entry is a view")
+    expect(!HistoryKind.scf.isView, "an SCF entry is not a view")
+    // The title leads with what was drawn, so the list says "MO 5" rather than
+    // "RHF/sto-3g" for a picture that has no energy of its own.
+    expect(entry.title.contains("MO 5"), "the title names the orbital")
+    expect(entry.title.contains("sto-3g"), "the title names the reference")
+
+    // An unknown kind must still decode, so an entry written by a newer build
+    // does not make the whole store unreadable.
+    expect(HistoryKind(stored: "WAT") == .other, "an unknown kind falls back to other")
+    expect(HistoryKind(stored: "DEN") == .density, "a density kind decodes")
+    expect(HistoryKind(stored: "ORB") == .orbitals, "an orbital kind decodes")
+
+    // The export has to describe the recipe rather than print an empty section.
+    let text = HistoryReport.text(for: [entry])
+    expect(text.contains("Picture"), "the export has a picture section")
+    expect(text.contains("MO 5"), "the export names the orbital")
+    expect(text.contains("RHF"), "the export names the reference")
+    expect(!text.contains("Not recorded"), "the export is not an empty section")
+}
+
 print("")
 if failures == 0 {
     print("\(checks)/\(checks) checks passed")

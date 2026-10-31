@@ -378,6 +378,89 @@ flat accessor yields **no vertices** while the triangle count stays right (see
 just offset from the molecule (`OrbitalMesh` centres on the same vector as
 `MoleculeLayout`).
 
+### The density viewer draws nested shells, not a slice
+
+The Density screen shows the total electron density the same way the orbital
+viewer shows an orbital: the whole molecule in 3D, wrapped in a translucent
+envelope. The difference is that the density is a single positive field, so
+there is no sign to colour by; the range of values is turned into depth instead.
+One shell is drawn at each of several **absolute** levels, and the shells nest —
+the highest level is the small dense core, the lowest is the cloud that reaches
+furthest out. `DensityPalette` colours them along one ramp so the picture reads
+as "this much density" rather than as a set of unrelated surfaces.
+
+The screen's primary picture is the 3D cloud; `DensitySliceView` is kept as a
+secondary renderer because the cube still arrives with a run when the builder's
+"Density cube" switch is on, and a cut plane answers a different question (what
+the density looks like on a slice) than the shells do.
+
+* `run_density_surface` in `engine.py` — the counterpart of
+  `run_orbital_surface`. `levels` overrides `DENSITY_LEVELS`; the levels are
+  **absolute** densities in electrons per cubic Bohr, not fractions, so the same
+  level means the same density on any molecule (the orbital viewer's isovalue is
+  a fraction of the orbital's own peak for the opposite reason — orbitals differ
+  in scale by orders of magnitude between basis sets, total densities do not).
+* **The box is fitted to the lowest level actually drawn, and the resolution
+  follows it.** A shell that meets the box wall is closed against that wall by
+  the marching step and reads as a shell spanning the whole box rather than as a
+  cloud around the molecule. The padding grows until the outermost level no
+  longer touches a face, and the point count grows with the box so the spacing
+  stays at the atoms'-box value — both capped (`_MAX_DENSITY_PADDING`,
+  `_MAX_DENSITY_POINTS_PER_AXIS`), because the cube is cubic in the point count
+  and this runs on a phone. `clipped` reports when the cap was reached with the
+  cloud still touching a wall.
+* `_density_values` in `engine.py` evaluates the field on the grid and
+  `orbital_surface.isosurface` turns it into a shell, so a density shell is
+  welded and normal-averaged exactly like an orbital lobe; there is no separate
+  density-surface module.
+* **The bracketing invariant is the authoritative test.** Every mesh vertex of a
+  shell at level `L` must sit in a cell whose corner values bracket `L`, since
+  the vertex is the linear interpolation of one such crossing. This is exact and
+  local: it caught nothing when it was first written, which is the point — it
+  cannot drift with grid spacing the way a global check can.
+* **Signed volume is not a test.** It was tried and dropped: a shell can be
+  open where it meets the box wall, so its divergence-theorem volume is
+  meaningless, and the marching output is triangles rather than a closed
+  surface. Do not reintroduce it as a cheaper check.
+* **A trilinear check is weaker than bracketing.** Sampling the reconstructed
+  field back at the vertex and asking it to equal the level looks equivalent but
+  is not: trilinear interpolation is not the inverse of the linear interpolation
+  the marching step uses, so it passes meshes that bracketing rejects. It also
+  needs a `_density_at` helper that duplicates the field evaluation.
+* `gridStep` is the **maximum** step over the three axes, not a per-axis triple:
+  the box is cubic but the atoms are not, so the steps differ and reporting one
+  of them makes an anisotropic grid look isotropic.
+* `DensityPalette.position(of:among:)` maps an absolute level onto the ramp
+  **logarithmically**. The levels span 0.002 to 0.02 and beyond, so a linear
+  mapping puts nearly all of them in the last few percent of the ramp and the
+  shells come out nearly the same colour. The layout test asserts the ramp spans
+  the shells for this reason.
+* The mesh reaches past the atoms, so `DensityMeshSet.boundingRadius` must take
+  part in the camera framing or a diffuse shell is cropped. `boundingRadius` is
+  measured **from the given centre**, so it legitimately changes with the centre;
+  the invariant worth testing is that every vertex moves by exactly the centre,
+  which is what the layout test checks.
+
+### Saved 3D pictures are recipes, not meshes
+
+Opening a history entry for an orbital or a density cloud re-runs the engine
+rather than storing the mesh. The mesh for a density cloud at the app's
+resolution is megabytes, and `HistoryStore.droppedFields` exists to keep entries
+in the tens of kilobytes, so a view entry stores only what is needed to rebuild
+the picture — the source, index, isovalue, or level list, plus the reference
+method — in `ViewRecords.swift`.
+
+* The kind is told from the payload's own marker (`ViewRecord.init?`), not from
+  the entry's stored kind, so a payload and its label cannot disagree about what
+  it holds. A payload with no marker decodes as `nil`, which the report renders
+  as "Not recorded" rather than as an empty section.
+* The geometry is loaded before the rebuild, because an entry opened from a
+  fresh launch has no geometry in memory; without that the picture renders with
+  no molecule under it.
+* Recording is deduplicated: re-opening the same orbital or the same level list
+  does not add a second entry. Without the dedup a user browsing the orbital
+  ladder fills the history with one entry per tap.
+
 ### Core and valence orbitals
 
 `src/pyscf_mobile/core_orbitals.py` classifies each orbital as core or valence,

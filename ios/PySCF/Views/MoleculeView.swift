@@ -29,6 +29,13 @@ struct MoleculeView: UIViewRepresentable {
     /// How opaque the envelope is drawn.  Applied to the existing material, so
     /// changing it never rebuilds the mesh.
     var orbitalOpacity: Double = MoleculeLayout.defaultOrbitalOpacity
+    /// The electron-density cloud to overlay, or ``nil``.  Drawn as nested
+    /// shells in the density ramp, around the same molecule and in the same
+    /// frame as the orbital would be.
+    var density: DensitySurface? = nil
+    /// Whether the density cloud is drawn.
+    var showsDensity: Bool = true
+    var densityOpacity: Double = MoleculeLayout.defaultDensityOpacity
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -51,7 +58,9 @@ struct MoleculeView: UIViewRepresentable {
         context.coordinator.update(
             geometry: geometry, elements: elementTable,
             surface: surface, showsOrbital: showsOrbital,
-            orbitalOpacity: orbitalOpacity)
+            orbitalOpacity: orbitalOpacity,
+            density: density, showsDensity: showsDensity,
+            densityOpacity: densityOpacity)
     }
 
     // MARK: - Node graph
@@ -68,6 +77,9 @@ struct MoleculeView: UIViewRepresentable {
         /// The orbital envelope, kept separate from the molecule so hiding it
         /// does not disturb the molecule's nodes or the camera.
         private let orbitalNode = SCNNode()
+        /// The density cloud, likewise kept separate: it is a different overlay
+        /// on the same molecule, and the two can be shown independently.
+        private let densityNode = SCNNode()
         private var atomNodes: [Int: SCNNode] = [:]
         private var bondNodes: [SCNNode] = []
         /// Identifies the geometry currently built, so identical input does not
@@ -76,9 +88,13 @@ struct MoleculeView: UIViewRepresentable {
         /// Identifies the orbital currently built, so a rebuild only happens
         /// when the orbital itself changes and not on every SwiftUI update.
         private var orbitalSignature = ""
+        /// Identifies the density cloud currently built, for the same reason.
+        private var densitySignature = ""
         /// How far the current envelope reaches from the origin, so the camera
         /// can frame it.
         private var orbitalRadius: Double = 0
+        /// How far the current density cloud reaches.
+        private var densityRadius: Double = 0
         private var cameraDistance: Double = 0
 
         func installRig(in view: SCNView) {
@@ -95,8 +111,11 @@ struct MoleculeView: UIViewRepresentable {
 
             scene.rootNode.addChildNode(content)
             // Added after the molecule so its translucent envelope blends over
-            // the atoms rather than being hidden behind them.
+            // the atoms rather than being hidden behind them.  The density
+            // cloud is added last so it wraps the orbital as well as the atoms
+            // when both are shown.
             scene.rootNode.addChildNode(orbitalNode)
+            scene.rootNode.addChildNode(densityNode)
             installLights()
         }
 
@@ -130,10 +149,13 @@ struct MoleculeView: UIViewRepresentable {
 
         func update(geometry: GeometryDescription?, elements: [Element],
                     surface: OrbitalSurface? = nil, showsOrbital: Bool = true,
-                    orbitalOpacity: Double = MoleculeLayout.defaultOrbitalOpacity) {
+                    orbitalOpacity: Double = MoleculeLayout.defaultOrbitalOpacity,
+                    density: DensitySurface? = nil, showsDensity: Bool = true,
+                    densityOpacity: Double = MoleculeLayout.defaultDensityOpacity) {
             guard let geometry = geometry, !geometry.atoms.isEmpty else {
                 content.isHidden = true
                 orbitalNode.isHidden = true
+                densityNode.isHidden = true
                 return
             }
             content.isHidden = false
@@ -150,23 +172,29 @@ struct MoleculeView: UIViewRepresentable {
                 rebuild(layout: layout, elements: elements)
             }
 
-            let visible = showsOrbital ? surface : nil
-            updateOrbital(visible, centreOfMass: geometry.centreOfMass)
-            applyOpacity(orbitalOpacity)
-            // The envelope can reach past the atoms, so it takes part in the
-            // framing; otherwise a diffuse orbital is cropped at the viewport.
-            reframe(to: layout.cameraDistance, orbitalRadius: orbitalNode.isHidden ? 0 : orbitalRadius)
+            updateOrbital(showsOrbital ? surface : nil, centreOfMass: geometry.centreOfMass)
+            updateDensity(showsDensity ? density : nil, centreOfMass: geometry.centreOfMass)
+            applyOpacity(orbitalOpacity, to: orbitalNode)
+            applyOpacity(densityOpacity, to: densityNode, floor: MoleculeLayout.minimumDensityOpacity)
+            // Either overlay can reach past the atoms, so both take part in the
+            // framing; otherwise a diffuse cloud is cropped at the viewport.
+            let overlay = max(orbitalNode.isHidden ? 0 : orbitalRadius,
+                              densityNode.isHidden ? 0 : densityRadius)
+            reframe(to: layout.cameraDistance, orbitalRadius: overlay)
         }
 
-        /// Sets the envelope's transparency on the materials already built.
+        /// Sets an overlay's transparency on the materials already built.
         ///
-        /// Separate from ``updateOrbital`` on purpose: opacity is a render
-        /// property, and routing it through the mesh rebuild would re-derive
-        /// the geometry on every step of the slider drag.
-        private func applyOpacity(_ opacity: Double) {
-            let clamped = min(max(opacity, 0.0), 1.0)
-            orbitalNode.childNodes.forEach { node in
-                node.geometry?.materials.forEach { material in
+        /// Separate from the mesh builders on purpose: opacity is a render
+        /// property, and routing it through a rebuild would re-derive the
+        /// geometry on every step of the slider drag.  The floor is applied here
+        /// so a slider that reaches its bottom still leaves the surface visible
+        /// as a shape rather than making it vanish.
+        private func applyOpacity(_ opacity: Double, to node: SCNNode,
+                                  floor: Double = MoleculeLayout.minimumOrbitalOpacity) {
+            let clamped = min(max(opacity, floor), 1.0)
+            node.childNodes.forEach { child in
+                child.geometry?.materials.forEach { material in
                     material.transparency = CGFloat(clamped)
                 }
             }
@@ -203,11 +231,75 @@ struct MoleculeView: UIViewRepresentable {
             }
         }
 
+        /// Builds the density shells, or hides them when there is no cloud.
+        ///
+        /// Rebuilt only when the cloud changes, for the same reason the orbital
+        /// is: the surface arrives as a fresh object on every load, so the
+        /// signature is what stops a re-render on each SwiftUI update from
+        /// discarding the meshes.
+        ///
+        /// The shells are added outermost first so the renderer, which blends
+        /// them back to front, draws the diffuse cloud before the dense cores.
+        /// Each shell is given its own ramp colour from ``DensityPalette``, which
+        /// is what turns the nesting into a readable density gradient.
+        private func updateDensity(_ surface: DensitySurface?, centreOfMass: [Double]) {
+            guard let surface = surface else {
+                densityNode.isHidden = true
+                densityNode.childNodes.forEach { $0.removeFromParentNode() }
+                densitySignature = ""
+                densityRadius = 0
+                return
+            }
+            densityNode.isHidden = false
+
+            let current = "\(surface.method)|\(surface.peak)|\(surface.pointsPerAxis)|"
+                + "\(surface.levels.map { String(format: "%.6f", $0) }.joined(separator: ","))|"
+                + "\(surface.triangleCount)"
+            if densitySignature != current {
+                densitySignature = current
+                densityNode.childNodes.forEach { $0.removeFromParentNode() }
+                let meshes = DensityMeshSet(surface: surface, centreOfMass: centreOfMass)
+                // Descending by ramp position: the diffuse blue cloud first,
+                // then the denser shells over it.
+                for shell in meshes.shells.sorted(by: { $0.palettePosition > $1.palettePosition }) {
+                    let colour = DensityPalette.colour(at: shell.palettePosition)
+                    densityNode.addChildNode(Self.makeSurfaceNode(
+                        shell.mesh,
+                        colour: UIColor(red: CGFloat(colour.red),
+                                        green: CGFloat(colour.green),
+                                        blue: CGFloat(colour.blue),
+                                        alpha: 1),
+                        opacity: MoleculeLayout.defaultDensityOpacity,
+                        renderingOrder: 5))
+                }
+                densityRadius = meshes.boundingRadius
+            }
+        }
+
         /// Which lobe a mesh is, which picks its colour.
         enum Phase { case positive, negative }
 
-        /// A lobe as a SceneKit node, shaded by the mesh's own normals.
+        /// An orbital lobe as a SceneKit node, shaded by the mesh's own normals.
         private static func makeOrbitalNode(_ mesh: OrbitalMesh, phase: Phase) -> SCNNode {
+            // Two hues that read as opposite phases, translucent so the atoms
+            // inside the envelope stay visible.
+            let colour: UIColor = phase == .positive
+                ? UIColor(red: 0.30, green: 0.55, blue: 0.95, alpha: 1)
+                : UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1)
+            return makeSurfaceNode(
+                mesh, colour: colour,
+                opacity: MoleculeLayout.defaultOrbitalOpacity, renderingOrder: 10)
+        }
+
+        /// A translucent isosurface mesh as a SceneKit node.
+        ///
+        /// Shared by the orbital lobes and the density shells: both are
+        /// double-sided translucent envelopes over the same molecule, and the
+        /// only differences are the colour, the opening opacity and the render
+        /// order that decides which blends over which.
+        private static func makeSurfaceNode(
+            _ mesh: OrbitalMesh, colour: UIColor, opacity: Double, renderingOrder: Int
+        ) -> SCNNode {
             let source = SCNGeometrySource(
                 data: Data(bytes: mesh.vertexData, count: mesh.vertexData.count * MemoryLayout<Float>.size),
                 semantic: .vertex,
@@ -236,30 +328,25 @@ struct MoleculeView: UIViewRepresentable {
             )
             let geometry = SCNGeometry(sources: [source, normalSource], elements: [element])
 
-            // Two hues that read as opposite phases, translucent so the atoms
-            // inside the envelope stay visible.  ``isDoubleSided`` matters
-            // because the viewer orbits the molecule and the far side of a lobe
-            // would otherwise vanish.
-            let colour: UIColor = phase == .positive
-                ? UIColor(red: 0.30, green: 0.55, blue: 0.95, alpha: 1)
-                : UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1)
+            // ``isDoubleSided`` matters because the viewer orbits the molecule
+            // and the far side of a surface would otherwise vanish.
             let material = SCNMaterial()
             material.diffuse.contents = colour
             material.emission.contents = colour.withAlphaComponent(0.25)
-            material.transparency = CGFloat(MoleculeLayout.defaultOrbitalOpacity)
+            material.transparency = CGFloat(opacity)
             material.lightingModel = .physicallyBased
             material.roughness.contents = 0.6
             material.metalness.contents = 0.0
             material.isDoubleSided = true
-            // Writing depth but not testing it against itself would make the
-            // two lobes fight where they meet; leaving the test on and the
-            // writes off lets them blend.
+            // Writing depth but not testing it against itself would make two
+            // overlapping surfaces fight where they meet; leaving the test on
+            // and the writes off lets them blend.
             material.writesToDepthBuffer = false
             material.blendMode = .alpha
             geometry.materials = [material]
 
             let node = SCNNode(geometry: geometry)
-            node.renderingOrder = 10
+            node.renderingOrder = renderingOrder
             return node
         }
 

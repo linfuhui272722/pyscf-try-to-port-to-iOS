@@ -147,6 +147,125 @@ do {
     expect(empty.cameraDistance.isFinite, "empty geometry still frames")
 }
 
+print("density cloud")
+do {
+    // The density picture is drawn as nested shells coloured along one ramp.
+    // Both halves of that are silent on a device: a shell at the wrong level
+    // still draws, and a ramp that maps every level to the same colour still
+    // draws - it just carries no information.
+    let surface = DensitySurface(fixture("density_surface"))
+
+    expect(!surface.shells.isEmpty, "the fixture has shells (\(surface.shells.count))")
+    expect(surface.hasGeometry, "the cloud has geometry")
+    expect(surface.peak > 0, "the peak is positive (\(surface.peak))")
+
+    // Ordered by ascending level, so the first shell is the diffuse cloud and
+    // the last is the densest core. The viewer relies on this for the legend.
+    let levels = surface.shells.map { $0.level }
+    expect(levels == levels.sorted(), "shells ascend by level")
+    expect(surface.levels == surface.levels.sorted(), "the level list ascends")
+    expect(Set(levels).count == levels.count, "no level is drawn twice")
+
+    // Every level asked for has a shell, including an empty one: dropping a
+    // level silently would make the legend disagree with the picture.
+    expect(surface.shells.count == surface.levels.count,
+           "one shell per level (\(surface.shells.count) vs \(surface.levels.count))")
+
+    // The ramp must actually separate the shells. A linear mapping over these
+    // absolute levels would put nearly all of them in the last few percent;
+    // this is the check that the logarithmic mapping is in place.
+    let positions = surface.shells.map { surface.palettePosition(of: $0) }
+    let spread = (positions.max() ?? 0) - (positions.min() ?? 0)
+    expect(spread > 0.5, "the ramp spans the shells (spread \(String(format: "%.2f", spread)))")
+    // Densest at the red end, so the position must fall as the level rises.
+    for (a, b) in zip(surface.shells, surface.shells.dropFirst()) {
+        expect(surface.palettePosition(of: a) >= surface.palettePosition(of: b),
+               "level \(a.level) is not bluer than \(b.level)")
+    }
+
+    // Framing: the cloud reaches past the atoms, so it must take part in the
+    // camera distance, or a diffuse shell is cropped at the viewport.
+    let meshes = DensityMeshSet(surface: surface, centreOfMass: [0, 0, 0])
+    expect(meshes.shells.count == surface.shells.filter { !$0.isEmpty }.count,
+           "a mesh per non-empty shell")
+    expect(meshes.boundingRadius > 0, "the cloud has a radius (\(meshes.boundingRadius))")
+    let atomExtent = layout("geometry").extent
+    expect(meshes.boundingRadius > atomExtent,
+           "the cloud reaches past the atoms (\(String(format: "%.2f", meshes.boundingRadius)) vs \(String(format: "%.2f", atomExtent)))")
+
+    // A cloud drawn around a molecule that is not at the origin must be shifted
+    // by the same vector the atoms are, or the shells sit beside the molecule.
+    // ``boundingRadius`` is measured from the given centre, so it changes with
+    // the centre; what must not change is the relationship between the mesh and
+    // that centre, which is what this checks: every vertex moves by exactly the
+    // centre, so the cloud keeps its position relative to the atoms.
+    let centre = GeometryDescription(fixture("geometry")).centreOfMass
+    expect(centre.count == 3, "the fixture reports a centre of mass")
+    let shifted = DensityMeshSet(surface: surface, centreOfMass: centre)
+    expect(shifted.shells.count == meshes.shells.count, "the same shells are built")
+    if let plain = meshes.shells.first?.mesh, let moved = shifted.shells.first?.mesh,
+       plain.vertexData.count == moved.vertexData.count {
+        // The first three floats of each vertex are its position.
+        var maxDelta = 0.0
+        for index in stride(from: 0, to: plain.vertexData.count, by: 6) {
+            for axis in 0..<3 {
+                let delta = Double(plain.vertexData[index + axis] - moved.vertexData[index + axis])
+                maxDelta = max(maxDelta, abs(delta - centre[axis]))
+            }
+        }
+        expect(maxDelta < 1e-5,
+               "every vertex is shifted by the centre (\(String(format: "%.2e", maxDelta)))")
+    } else {
+        expect(false, "the shells built meshes to compare")
+    }
+}
+
+print("density ramp")
+do {
+    // The ramp is a fixed table; these pin the ends and the monotone walk
+    // between them, so a stop edited by hand cannot silently reorder the
+    // colours the shells are drawn in.
+    expect(DensityPalette.stops.count >= 3, "the ramp has stops")
+    let positions = DensityPalette.stops.map { $0.position }
+    expect(positions == positions.sorted(), "stops ascend")
+    expect(positions.first == 0 && positions.last == 1, "the ramp covers 0 to 1")
+
+    let red = DensityPalette.colour(at: 0)
+    let blue = DensityPalette.colour(at: 1)
+    expect(red.red > red.blue, "the dense end is red")
+    expect(blue.blue > blue.red, "the diffuse end is blue")
+
+    // Out-of-range input is clamped rather than extrapolated: a shell whose
+    // level falls outside the list must still get a valid colour.
+    let below = DensityPalette.colour(at: -5)
+    expect(abs(below.red - red.red) < 1e-9, "below the ramp clamps to the dense end")
+    let above = DensityPalette.colour(at: 5)
+    expect(abs(above.blue - blue.blue) < 1e-9, "above the ramp clamps to the diffuse end")
+    let nan = DensityPalette.colour(at: Double.nan)
+    expect(nan.red.isFinite && nan.green.isFinite && nan.blue.isFinite, "a NaN position yields a colour")
+
+    // Every colour must be a real RGB triple in range: the values are handed
+    // straight to UIColor, which traps on out-of-range components.
+    for step in 0...20 {
+        let colour = DensityPalette.colour(at: Double(step) / 20)
+        expect(colour.red >= 0 && colour.red <= 1
+               && colour.green >= 0 && colour.green <= 1
+               && colour.blue >= 0 && colour.blue <= 1,
+               "colour at \(step)/20 is in range")
+    }
+
+    // Position mapping: the extremes of the level list land on the ramp ends,
+    // and the middle sits between them.
+    let levels = [0.002, 0.01, 0.05, 0.2, 1.0]
+    expect(DensityPalette.position(of: 1.0, among: levels) == 0, "the densest level is at the red end")
+    expect(DensityPalette.position(of: 0.002, among: levels) == 1, "the most diffuse level is at the blue end")
+    let middle = DensityPalette.position(of: 0.05, among: levels)
+    expect(middle > 0 && middle < 1, "a middle level sits between the ends (\(middle))")
+    // A single-level list must not divide by zero.
+    expect(DensityPalette.position(of: 0.1, among: [0.1]) == 0, "a lone level is handled")
+    expect(DensityPalette.position(of: 0.1, among: []) == 0, "an empty level list is handled")
+}
+
 print("")
 print(failures == 0 ? "\(checks)/\(checks) checks passed" : "\(failures) of \(checks) checks FAILED")
 exit(failures == 0 ? 0 : 1)

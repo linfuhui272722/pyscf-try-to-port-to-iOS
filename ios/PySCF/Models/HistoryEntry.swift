@@ -22,12 +22,30 @@ enum HistoryKind: String, CaseIterable, Identifiable {
     case mp2 = "MP2"
     case ccsd = "CCSD"
     case scan = "SCAN"
+    /// A 3D orbital surface that was drawn.  Not a calculation: the entry
+    /// records which orbital was viewed, and the detail view rebuilds the
+    /// surface through the engine.
+    case orbitals = "ORB"
+    /// A 3D electron-density cloud that was drawn, recorded the same way.
+    case density = "DEN"
     case other = "OTHER"
 
     var id: String { rawValue }
 
     init(stored: String) {
         self = HistoryKind(rawValue: stored) ?? .other
+    }
+
+    /// Whether the entry records a view rather than a calculation.
+    ///
+    /// A view entry carries no energy of its own and its payload describes what
+    /// was drawn; the detail view rebuilds it instead of rendering result
+    /// panels from it.
+    var isView: Bool {
+        switch self {
+        case .orbitals, .density: return true
+        default: return false
+        }
     }
 }
 
@@ -194,10 +212,18 @@ struct HistoryEntry: Identifiable, Equatable {
     }
 
     /// Title line, e.g. ``RHF/sto-3g`` or ``RKS/def2-tzvp (b3lyp)``.
+    ///
+    /// A view entry records what was drawn rather than a calculation, so its
+    /// title leads with that and then the reference it was built on: ``MO 5
+    /// (RHF/sto-3g)`` reads as "the fifth orbital, from this run", which is what
+    /// the entry is.
     var title: String {
         var text = "\(method)/\(basis)"
         if let functional = functional, !functional.isEmpty {
             text += " (\(functional))"
+        }
+        if kind.isView {
+            text = "\(method) — \(text)"
         }
         return text
     }

@@ -209,6 +209,38 @@ struct PySCFEngine {
         }
     }
 
+    /// Fetches the electron density as nested isosurfaces for the 3D viewer.
+    ///
+    /// Separate from ``scf(include:)``'s density cube: the cube is a flat voxel
+    /// array the slice view renders, while this returns triangle meshes the
+    /// scene draws.  A second round trip rather than a bigger payload, because
+    /// the density picture is fetched when its screen is opened rather than on
+    /// every run.
+    func densitySurface(
+        atoms: String,
+        method: String = "RHF",
+        basis: String = "sto-3g",
+        xc: String = "b3lyp",
+        charge: Int = 0,
+        spin: Int = 0,
+        levels: [Double] = [],
+        pointsPerAxis: Int = 40
+    ) async throws -> DensitySurface {
+        try await run {
+            var params: [String: Any] = [
+                "atoms": atoms,
+                "method": method,
+                "basis": basis,
+                "xc": xc,
+                "charge": charge,
+                "spin": spin,
+                "pointsPerAxis": pointsPerAxis,
+            ]
+            if !levels.isEmpty { params["levels"] = levels }
+            return DensitySurface(try call("density_surface", params))
+        }
+    }
+
     /// Runs MP2 on top of the requested reference.
     ///
     /// ``charge`` and ``spin`` describe the molecule, not the correlation
