@@ -875,6 +875,84 @@ struct OrbitalPhase {
     }
 }
 
+/// One atom's contribution of one angular momentum to an orbital.
+///
+/// ``angular`` is ``"s"``, ``"p"``, ``"d"`` or ``"f"`` -- the angular momentum
+/// only, never a principal number.  A label like ``3p`` would name an atomic
+/// orbital a split-valence basis does not contain: PySCF numbers the shells of
+/// each angular momentum separately, so oxygen's two valence p shells come out
+/// as ``2p`` and ``3p`` although both are 2p functions.
+struct OrbitalComponent: Identifiable, Hashable {
+    var atom: Int
+    var element: String
+    var angular: String
+    var percent: Double
+
+    var id: String { "\(atom)-\(angular)" }
+
+    init(_ json: JSONObject) {
+        atom = json.integer("atom") ?? 0
+        element = json.value("element") as String? ?? ""
+        angular = json.value("angular") as String? ?? ""
+        percent = json.number("percent") ?? 0
+    }
+}
+
+/// What one orbital is built from: its components and their signed total.
+struct OrbitalComposition {
+    var components: [OrbitalComponent]
+    /// The sum of every component, before the display floor dropped the small
+    /// ones.  It is 100 for a correct wavefunction, because ``C^T S C = I``
+    /// makes the per-AO Mulliken populations of any orbital sum to one, so a
+    /// value away from 100 is a self-check on the density.
+    var total: Double
+
+    init(_ json: JSONObject) {
+        components = json.objects("components").map(OrbitalComponent.init)
+        total = json.number("total") ?? 0
+    }
+
+    /// ``O1 p 58%`` style label, strongest component first.
+    var summary: String {
+        components.map { component in
+            "\(component.element)\(component.atom + 1) \(component.angular) "
+                + String(format: "%.0f%%", component.percent)
+        }.joined(separator: "  ")
+    }
+
+    /// The leading component, as a short label for a compact list row.
+    ///
+    /// Components arrive strongest first, so this is the contribution that
+    /// identifies the orbital.  A component the display floor dropped is not
+    /// present, which is the point: the label names what the orbital is mostly
+    /// made of rather than listing everything it touches.
+    var dominant: String? {
+        guard let first = components.first else { return nil }
+        return "\(first.element)\(first.atom + 1) \(first.angular)"
+    }
+
+    /// The leading component's share, for the same compact row.
+    var dominantPercent: Double? { components.first?.percent }
+}
+
+/// Every orbital's composition, in the energy ladder's own order.
+struct OrbitalCompositions {
+    var orbitals: [OrbitalComposition]
+    /// The percentage below which a component is left out of the list.
+    var threshold: Double
+
+    init(_ json: JSONObject) {
+        orbitals = json.objects("orbitals").map(OrbitalComposition.init)
+        threshold = json.number("threshold") ?? 0
+    }
+
+    /// The composition of one orbital, or ``nil`` when the payload is short.
+    func composition(of index: Int) -> OrbitalComposition? {
+        guard index >= 0, index < orbitals.count else { return nil }
+        return orbitals[index]
+    }
+}
+
 /// The isosurface of one orbital, both phases, for the 3D viewer.
 ///
 /// This is the familiar orbital picture: the molecule with a translucent
@@ -902,6 +980,10 @@ struct OrbitalSurface {
     var clipped: Bool
     var positive: OrbitalPhase
     var negative: OrbitalPhase
+    /// What the drawn orbital is made of.  Carried on the surface rather than
+    /// read from the run payload because a localised orbital is not one of the
+    /// canonical orbitals that payload describes.
+    var composition: OrbitalComposition?
 
     init(_ json: JSONObject) {
         source = json.value("source") ?? "mo"
@@ -917,6 +999,7 @@ struct OrbitalSurface {
         clipped = json.value("clipped") as Bool? ?? false
         positive = OrbitalPhase(json.object("positive") ?? JSONObject([:]))
         negative = OrbitalPhase(json.object("negative") ?? JSONObject([:]))
+        composition = json.object("composition").map(OrbitalComposition.init)
     }
 
     var triangleCount: Int { positive.triangleCount + negative.triangleCount }
@@ -957,6 +1040,9 @@ struct ScfResult {
     var scfEnergy: Double?
     var grid: DensityGrid?
     var moCoefficients: [[Double]]?
+    /// What each orbital in the ladder is built from, when the run carried the
+    /// population analysis.  ``nil`` for a payload that skipped it.
+    var orbitalCompositions: OrbitalCompositions?
 
     /// The engine's response, verbatim.
     ///
@@ -996,6 +1082,8 @@ struct ScfResult {
         grid = json.object("grid").map(DensityGrid.init)
         moCoefficients = (json.raw["moCoefficients"] as? [[Any]])?
             .map { $0.compactMap { ($0 as? NSNumber)?.doubleValue } }
+        orbitalCompositions = json.object("orbitalCompositions")
+            .map(OrbitalCompositions.init)
     }
 }
 

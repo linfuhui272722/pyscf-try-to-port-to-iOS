@@ -299,12 +299,14 @@ struct OrbitalsScreen: View {
                     geometry: model.geometry,
                     elementTable: model.elements,
                     surface: model.orbitalSurface,
-                    showsOrbital: model.showsOrbital)
+                    showsOrbital: model.showsOrbital,
+                    orbitalOpacity: model.orbitalOpacity)
                     .frame(minHeight: 320)
                     .background(Color(.secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
 
                 isovalueControls()
+                opacityControls()
 
                 if let surface = model.orbitalSurface {
                     MetricRow(
@@ -318,6 +320,7 @@ struct OrbitalsScreen: View {
                                   surface.triangleCount,
                                   String(format: "%.4f", surface.isovalue))
                     )
+                    compositionPanel(surface.composition)
                     Text(L("orbitals.viewer.note"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -365,6 +368,11 @@ struct OrbitalsScreen: View {
             HStack(spacing: 8) {
                 ForEach(Array(result.orbitalEnergies.enumerated()), id: \.offset) { index, energy in
                     let occupation = index < result.occupations.count ? result.occupations[index] : 0
+                    // The composition travels with the run, so each button can
+                    // say what the orbital is made of before it is drawn.  A
+                    // payload that skipped the population analysis has none, and
+                    // the button then shows the energy alone as it used to.
+                    let composition = result.orbitalCompositions?.composition(of: index)
                     Button {
                         Task { await model.loadOrbital(index, source: "mo") }
                     } label: {
@@ -373,6 +381,16 @@ struct OrbitalsScreen: View {
                             Text(String(format: "%.3f", energy))
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
+                            if let composition = composition, let dominant = composition.dominant {
+                                Text(dominant)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                if let percent = composition.dominantPercent {
+                                    Text(String(format: "%.0f%%", percent))
+                                        .font(.caption2.monospacedDigit())
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
@@ -469,6 +487,86 @@ struct OrbitalsScreen: View {
                 Toggle(L("orbitals.viewer.show"), isOn: $model.showsOrbital)
                     .labelsHidden()
                     .toggleStyle(.switch)
+            }
+        }
+    }
+
+    /// The transparency slider for the orbital envelope.
+    ///
+    /// Purely a render setting: the value is applied to the material already on
+    /// screen, so dragging it does not refetch the surface and the picture
+    /// follows the finger.  The molecule sits inside the envelope, so the useful
+    /// direction is towards transparent -- an opaque envelope hides the atoms it
+    /// is meant to be placed around.
+    @ViewBuilder
+    private func opacityControls() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(L("orbitals.viewer.opacity"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "%.0f%%", model.orbitalOpacity * 100))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 12) {
+                Image(systemName: "circle.dotted")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(
+                    value: $model.orbitalOpacity,
+                    in: MoleculeLayout.minimumOrbitalOpacity...MoleculeLayout.maximumOrbitalOpacity
+                ) {
+                    Text(L("orbitals.viewer.opacity"))
+                }
+                Image(systemName: "circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// What the drawn orbital is made of, strongest contribution first.
+    ///
+    /// The share is a signed Mulliken population, so an antibonding component is
+    /// negative and is shown as such rather than as a magnitude: the sign is the
+    /// bonding information.  The total is shown alongside as the reader's own
+    /// check, because a correct orbital's shares sum to 100.
+    @ViewBuilder
+    private func compositionPanel(_ composition: OrbitalComposition?) -> some View {
+        if let composition = composition, !composition.components.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(L("orbitals.viewer.composition"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(LF("orbitals.viewer.compositionTotal",
+                            String(format: "%.0f", composition.total)))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(composition.components) { component in
+                    HStack(spacing: 8) {
+                        Text("\(component.element)\(component.atom + 1) \(component.angular)")
+                            .font(.caption.monospacedDigit())
+                        Spacer(minLength: 8)
+                        // A bar makes the comparison between components visible
+                        // without reading the numbers.  Width is the magnitude,
+                        // colour carries the sign: a negative share is an
+                        // antibonding contribution, not a small one.
+                        Capsule()
+                            .fill(component.percent < 0 ? Color.orange : Color.accentColor)
+                            .frame(width: max(2, abs(component.percent) * 0.9), height: 6)
+                        Text(String(format: "%+.1f%%", component.percent))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text(L("orbitals.viewer.compositionNote"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }

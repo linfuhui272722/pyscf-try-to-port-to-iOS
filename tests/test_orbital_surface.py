@@ -489,3 +489,144 @@ def test_orbital_surface_keeps_its_resolution_when_the_box_grows():
         "the box grew to the cap, so this test cannot see the spacing invariant"
     )
     assert not grown["clipped"]
+
+
+# ---------------------------------------------------------------------------
+# Orbital composition
+# ---------------------------------------------------------------------------
+#
+# Each orbital is annotated with what it is built from: which atom, which
+# angular momentum, what share.  The failure this guards against is chemical,
+# not numerical -- a composition that names an atomic orbital the basis does not
+# contain reads as a plausible percentage and no arithmetic check would catch
+# it, so the tests pin the answer to the chemistry.
+
+
+def test_composition_names_angular_momentum_not_shell_label():
+    """Water's HOMO is the oxygen p lone pair, and it says so.
+
+    The 1b1 lone pair of water is pure oxygen 2p by symmetry.  A split-valence
+    basis puts two p shells on oxygen, and PySCF labels them ``2p`` and ``3p``
+    because its principal number counts per angular momentum rather than
+    following the aufbau filling.  Reporting the second as ``3p`` would name a
+    high-lying atomic orbital water does not have -- the kind of number that
+    looks right and is not.  Only the angular momentum is reported.
+    """
+    payload = engine.dispatch("scf", {
+        "atoms": WATER, "basis": "6-31g", "method": "RHF", "include": [],
+    })
+    compositions = payload["orbitalCompositions"]
+    assert compositions is not None, "the composition is missing from the payload"
+    assert len(compositions["orbitals"]) == payload["nBasis"], (
+        "one composition per orbital, in the ladder's order")
+
+    # MO 5 is the 1b1 lone pair (index 4).  It is oxygen p and nothing else.
+    homo = compositions["orbitals"][4]
+    angular = {component["angular"] for component in homo["components"]}
+    assert angular == {"p"}, (
+        f"the 1b1 lone pair is reported as {sorted(angular)}; it is pure oxygen p"
+    )
+    oxygen_p = [component for component in homo["components"]
+                if component["element"] == "O" and component["angular"] == "p"]
+    assert len(oxygen_p) == 1, "oxygen's p population is reported as one component"
+    assert abs(oxygen_p[0]["percent"] - 100.0) < 0.5, (
+        f"the lone pair is {oxygen_p[0]['percent']}% oxygen p, not all of it")
+    for component in homo["components"]:
+        assert component["angular"] in ("s", "p", "d", "f"), (
+            f"{component['angular']!r} is not an angular momentum; a principal "
+            f"quantum number leaked back into the composition")
+
+
+def test_composition_percentages_sum_to_one_hundred():
+    """Every orbital's shares add to 100, including the virtuals.
+
+    ``C^T S C = I`` makes the signed per-AO Mulliken populations of any orbital
+    sum to exactly one, so the percentages sum to 100.  Summing magnitudes
+    instead would let a negative overlap term inflate the total and break the
+    one property that makes the numbers readable as a share, so the invariant is
+    checked on a case -- water's 4a1, MO 6 -- that carries a large negative
+    oxygen s contribution.
+    """
+    payload = engine.dispatch("scf", {
+        "atoms": WATER, "basis": "6-31g", "method": "RHF", "include": [],
+    })
+    for index, orbital in enumerate(payload["orbitalCompositions"]["orbitals"]):
+        assert abs(orbital["total"] - 100.0) < 0.5, (
+            f"orbital {index + 1} sums to {orbital['total']}, not 100")
+
+
+def test_composition_keeps_the_largest_component_when_all_are_small():
+    """A delocalised orbital still reports what it is made of.
+
+    Benzene's pi orbital spreads over six carbons, so at a one-percent floor
+    every component survives and the list is long.  The floor exists for the
+    orbitals that spread over far more atoms than that, and the guarantee is
+    that the strongest component is never dropped: an orbital annotated with
+    nothing at all is worse than one annotated with only its main contributor.
+    """
+    payload = engine.dispatch("scf", {
+        "atoms": BENZENE, "basis": "sto-3g", "method": "RHF", "include": [],
+    })
+    compositions = payload["orbitalCompositions"]
+    for index, orbital in enumerate(compositions["orbitals"]):
+        assert orbital["components"], f"orbital {index + 1} reports no components"
+        assert abs(orbital["components"][0]["percent"]) > 0, (
+            f"orbital {index + 1}'s leading component is zero")
+        percents = [component["percent"] for component in orbital["components"]]
+        assert percents == sorted(percents, key=abs, reverse=True), (
+            f"orbital {index + 1}'s components are not strongest first")
+
+
+def test_orbital_surface_reports_the_composition_of_what_it_drew():
+    """The drawn orbital carries its own composition, not the ladder's.
+
+    The viewer can draw a localised orbital, which is not one of the canonical
+    orbitals the run payload describes, so the surface has to carry the
+    composition of the coefficients it was actually built from.  A localised
+    lone pair on oxygen is a single centre, which is what makes the annotation
+    on the picture agree with the picture.
+    """
+    canonical = engine.dispatch("orbital_surface", {
+        "atoms": WATER, "basis": "6-31g", "method": "RHF",
+        "source": "mo", "index": 4, "pointsPerAxis": 20,
+    })
+    assert canonical["composition"] is not None, "the surface carries no composition"
+    angular = {component["angular"] for component in canonical["composition"]["components"]}
+    assert angular == {"p"}, f"the drawn lone pair is reported as {sorted(angular)}"
+
+    localised = engine.dispatch("orbital_surface", {
+        "atoms": WATER, "basis": "6-31g", "method": "RHF",
+        "source": "pm-mulliken", "index": 0, "pointsPerAxis": 20,
+    })
+    assert localised["composition"] is not None, (
+        "a localised orbital's surface carries no composition")
+    assert abs(localised["composition"]["total"] - 100.0) < 0.5, (
+        f"the localised orbital sums to {localised['composition']['total']}, not 100")
+
+
+def test_composition_survives_an_unrestricted_reference():
+    """Both spin blocks are annotated, in the ladder's own order.
+
+    An unrestricted reference stores the alpha and beta orbitals as separate
+    blocks and the energy ladder concatenates them, so the composition has to
+    cover the same span.  Getting this wrong reports one block's composition
+    against the other block's index, which still sums to 100 and so passes any
+    arithmetic check.
+    """
+    payload = engine.dispatch("scf", {
+        "atoms": "O 0 0 0; O 0 0 1.21", "basis": "sto-3g",
+        "method": "UHF", "spin": 2, "include": [],
+    })
+    assert payload["nAlpha"] != payload["nBeta"], (
+        "the fixture is not spin-polarised, so it does not exercise both blocks")
+    orbitals = payload["orbitalCompositions"]["orbitals"]
+    # Each spin block carries one orbital per basis function, so the unrestricted
+    # ladder is twice the basis size -- the same span the energy chart shows.
+    assert len(orbitals) == 2 * payload["nBasis"], (
+        f"{len(orbitals)} compositions for {payload['nBasis']} basis functions "
+        f"across both spins")
+    for index, orbital in enumerate(orbitals):
+        assert abs(orbital["total"] - 100.0) < 0.5, (
+            f"orbital {index + 1} of the unrestricted reference sums to "
+            f"{orbital['total']}, not 100")
+

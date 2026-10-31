@@ -182,6 +182,10 @@ final class AppModel: ObservableObject {
     @Published var isovalueFraction: Double = 0.05
     /// Whether the envelope is drawn, so the molecule can be inspected alone.
     @Published var showsOrbital: Bool = true
+    /// How opaque the envelope is drawn, 0.05 to 1.  A render property only:
+    /// it is applied to the existing material rather than refetching the
+    /// surface, so dragging the slider does not recompute anything.
+    @Published var orbitalOpacity: Double = MoleculeLayout.defaultOrbitalOpacity
     /// Set while the orbital isosurface is being computed.
     @Published var isLoadingOrbital: Bool = false
     /// Identifies the newest orbital request, so a slow earlier one cannot

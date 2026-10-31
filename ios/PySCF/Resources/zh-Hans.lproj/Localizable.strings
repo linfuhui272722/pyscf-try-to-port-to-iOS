@@ -209,3 +209,7 @@
 "results.optimisation.rmsGrad" = "均方根 |梯度|";
 "results.optimisation.steps" = "%d / %d 步";
 "results.optimisation.trace" = "收敛过程";
+"orbitals.viewer.opacity" = "包络透明度";
+"orbitals.viewer.composition" = "成分";
+"orbitals.viewer.compositionTotal" = "合计 %@%%";
+"orbitals.viewer.compositionNote" = "该轨道在各原子上的占比，按角动量（s、p、d、f）列出，即该原子基函数在此轨道中的 Mulliken 布居。负值表示反键贡献。基组中的第二组 p 壳层不单独列出，因为它们都是价层 p 函数。";

@@ -836,6 +836,10 @@ def _electronic_structure(mf, atoms, include, localization: str | None = None) -
         # out rather than paying for three O(N^2) analyses per geometry.
         result["dipole"] = _dipole(mf)
         result["mulliken"] = _mulliken(mf, atoms)
+        # Which atom and which shell each orbital is built from.  Computed here
+        # rather than on demand because the viewer's orbital list annotates
+        # every entry, so a per-orbital round trip would be one call per button.
+        result["orbitalCompositions"] = _orbital_compositions(mf)
         result["mayer"] = _mayer_bond_orders(mf, atoms)
         # NPA, the natural orbitals and the Wiberg bond orders all come out of
         # one NAO transformation.
@@ -1308,41 +1312,166 @@ def run_intrinsic_localization(params: dict) -> dict:
     }
 
 
-def _orbital_column(mf, index: int) -> np.ndarray:
-    """The AO coefficients of one canonical orbital, as a 1-D column.
+def _coefficient_blocks(mf) -> list[np.ndarray]:
+    """The MO coefficient matrices, one per spin channel.
 
     A closed-shell reference stores one ``(nao, nmo)`` block.  An unrestricted
     one stores the alpha and beta blocks stacked, as ``(2, nao, nmo)`` or a
     tuple of two ``(nao, nmo)`` arrays, and the energy ladder the app shows is
     those blocks concatenated in that order, so an index past the first block
-    selects from the second.  Treating the stacked array as a single block would
-    pick the wrong orbital and then fail on the shape, so the two cases are
-    separated here rather than left to the caller.
+    selects from the second.
     """
     coefficients = mf.mo_coeff
-    blocks = None
     if isinstance(coefficients, (tuple, list)):
-        blocks = [np.asarray(block, dtype=float) for block in coefficients]
-    else:
-        stacked = np.asarray(coefficients, dtype=float)
-        if stacked.ndim == 3:
-            blocks = [stacked[spin] for spin in range(stacked.shape[0])]
-
-    if blocks is not None:
-        per_block = blocks[0].shape[1]
-        if not 0 <= index < per_block * len(blocks):
-            raise ValueError(
-                f"orbital index {index} outside 0..{per_block * len(blocks) - 1}")
-        spin, column = divmod(index, per_block)
-        return blocks[spin][:, column]
-
+        return [np.asarray(block, dtype=float) for block in coefficients]
     stacked = np.asarray(coefficients, dtype=float)
-    if not 0 <= index < stacked.shape[1]:
-        raise ValueError(f"orbital index {index} outside 0..{stacked.shape[1] - 1}")
-    column = stacked[:, index]
-    if column.ndim > 1:
-        column = column[:, 0]
-    return column
+    if stacked.ndim == 3:
+        return [stacked[spin] for spin in range(stacked.shape[0])]
+    return [stacked]
+
+
+def _orbital_column(mf, index: int) -> np.ndarray:
+    """The AO coefficients of one canonical orbital, as a 1-D column.
+
+    The spin blocks are separated by ``_coefficient_blocks``, so an index into
+    the second block picks the right orbital rather than being read against the
+    first block's shape and then failing on the shape check.
+    """
+    blocks = _coefficient_blocks(mf)
+    per_block = blocks[0].shape[1]
+    if not 0 <= index < per_block * len(blocks):
+        raise ValueError(
+            f"orbital index {index} outside 0..{per_block * len(blocks) - 1}")
+    spin, column = divmod(index, per_block)
+    result = blocks[spin][:, column]
+    if result.ndim > 1:
+        result = result[:, 0]
+    return result
+
+
+def _angular_groups(mol) -> dict[tuple[int, str, str], list[int]]:
+    """The AO indices belonging to each ``(atom, element, angular momentum)``.
+
+    Grouped by angular momentum -- s, p, d, f -- and deliberately not by the
+    shell label ``ao_labels`` returns.  That label's leading number is a
+    per-angular-momentum counter starting at ``l + 1``, not a principal quantum
+    number: a split-valence basis puts two genuine valence p shells on oxygen,
+    and PySCF numbers them ``2p`` and ``3p``.  Reporting the second as ``3p``
+    would name a high-lying atomic orbital the wavefunction does not contain,
+    which is a wrong chemical statement rather than a rounding detail.  Both are
+    valence 2p functions, so they are summed under ``p``.
+
+    Read from ``mol._bas`` rather than parsed from the labels, matching how
+    ``natural_orbitals`` builds its own layout: the label's letter is a
+    formatting choice, while the angular momentum is the number PySCF
+    integrates with.
+    """
+    letters = "spdfghik"
+    groups: dict[tuple[int, str, str], list[int]] = {}
+    index = 0
+    for shell in mol._bas:
+        atom = int(shell[0])
+        angular = int(shell[1])
+        functions = int(shell[3]) * (2 * angular + 1)
+        # A function beyond the letters PySCF names is still counted, under its
+        # own angular momentum, so the shares keep summing to 100 rather than
+        # silently losing that population.
+        label = letters[angular] if angular < len(letters) else f"l={angular}"
+        key = (atom, str(mol.atom_symbol(atom)), label)
+        groups.setdefault(key, []).extend(range(index, index + functions))
+        index += functions
+    return groups
+
+
+def _compose_column(column: np.ndarray, weighted: np.ndarray,
+                    groups: dict[tuple[int, str, str], list[int]],
+                    threshold: float) -> dict:
+    """One orbital's components, strongest first, and the signed total.
+
+    ``weighted`` is ``S @ C`` for the block ``column`` came from; passing it in
+    lets the caller compute it once for every orbital rather than once each.
+    """
+    populations = column * weighted
+    entries = []
+    for (atom, element, angular), indices in groups.items():
+        share = float(populations[indices].sum()) * 100.0
+        entries.append({
+            "atom": atom,
+            "element": element,
+            "angular": angular,
+            "percent": round(share, 2),
+        })
+    entries.sort(key=lambda entry: abs(entry["percent"]), reverse=True)
+    kept = [entry for entry in entries if abs(entry["percent"]) >= threshold]
+    return {
+        "components": kept or entries[:1],
+        "total": round(sum(entry["percent"] for entry in entries), 2),
+    }
+
+
+def _column_composition(mf, column: np.ndarray, threshold: float = 1.0) -> dict | None:
+    """The composition of a single orbital, given its AO coefficients."""
+    try:
+        overlap = np.asarray(mf.get_ovlp(), dtype=float)
+        groups = _angular_groups(mf.mol)
+    except Exception:
+        return None
+    if not groups:
+        return None
+    column = np.asarray(column, dtype=float)
+    return _compose_column(column, overlap @ column, groups, threshold)
+
+
+def _orbital_compositions(mf, threshold: float = 1.0) -> dict | None:
+    """What each orbital is made of: which atom, which angular momentum, what share.
+
+    The share is the Mulliken population of the orbital summed over one atom's
+    functions of one angular momentum, as a percentage.  Water's HOMO comes out
+    as the oxygen ``p`` lone pair it is; a delocalised ring orbital comes out as
+    the per-carbon share.
+
+    Only the angular momentum is reported, never a principal number.  The shell
+    label PySCF prints carries a counter that restarts for each angular
+    momentum, so a split-valence oxygen is labelled ``2p`` and ``3p`` for two
+    functions that are both valence 2p; a label like ``O 3p`` would assert an
+    atomic orbital the basis does not have.  See ``_angular_groups``.
+
+    Signed, not absolute.  Because ``C^T S C = I``, the sum of every per-AO
+    Mulliken population over the whole basis is exactly one per orbital, so the
+    reported shares add to 100%.  Taking magnitudes elementwise would let a
+    small negative overlap term push that total past 100 and break the one
+    invariant that makes the numbers readable as a share.  A negative share is
+    a real antibonding contribution and is reported as one.
+
+    ``threshold`` drops the components below that percentage from the list --
+    a delocalised orbital over a dozen atoms otherwise reports a dozen entries
+    of a fraction of a percent.  The largest component is always kept, so a
+    long list is trimmed to the ones that identify the orbital and never to
+    nothing.
+    """
+    try:
+        overlap = np.asarray(mf.get_ovlp(), dtype=float)
+        groups = _angular_groups(mf.mol)
+    except Exception:
+        return None
+    if not groups:
+        return None
+
+    per_orbital = []
+    for block in _coefficient_blocks(mf):
+        # ``(S C)_mu,i * C_mu,i`` is the Mulliken population of AO mu in
+        # orbital i, so one matrix product covers every orbital at once.
+        weighted = overlap @ block
+        for index in range(block.shape[1]):
+            per_orbital.append(
+                _compose_column(block[:, index], weighted[:, index], groups, threshold))
+
+    return {
+        "threshold": threshold,
+        # One entry per orbital, in the ladder's own order, so index i here is
+        # orbital i on the chart.
+        "orbitals": per_orbital,
+    }
 
 
 def run_orbital_surface(params: dict) -> dict:
@@ -1425,6 +1554,9 @@ def run_orbital_surface(params: dict) -> dict:
         "orbitalEnergy": round(orbital_energy, 8),
         "occupation": round(occupation, 6),
         "nBasis": int(mf.mol.nao_nr()),
+        # The composition of the orbital actually drawn, which for a localised
+        # source is not one of the canonical orbitals the run payload carries.
+        "composition": _column_composition(mf, column),
         "pointsPerAxis": points,
         # The grid the surface was actually sampled on, which exceeds
         # ``pointsPerAxis`` when a diffuse orbital forced the box to grow: the

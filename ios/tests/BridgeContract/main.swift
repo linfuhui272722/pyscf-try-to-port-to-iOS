@@ -274,6 +274,33 @@ do {
         expect(false, "the mesh builder accepts the fixture")
     }
 
+    // What the drawn orbital is made of.  The annotation names an angular
+    // momentum, never a principal number: PySCF numbers the shells of each
+    // angular momentum separately, so a split-valence oxygen's two valence p
+    // shells come out as "2p" and "3p" although both are 2p functions.  A
+    // "3p" component here would be a chemically wrong statement that reads as
+    // a plausible one.
+    if let composition = surface.composition {
+        expect(!composition.components.isEmpty, "the composition names its components")
+        expect(composition.components.count <= surface.nBasis,
+               "the composition has no more components than basis functions")
+        for component in composition.components {
+            expect(["s", "p", "d", "f"].contains(component.angular),
+                   "the component names an angular momentum (\(component.angular))")
+            expect(!component.element.isEmpty, "the component names its element")
+            expect(component.atom >= 0, "the component names its atom (\(component.atom))")
+        }
+        // The components arrive strongest first, which is what the compact
+        // list row relies on when it shows only the leading one.
+        let magnitudes = composition.components.map { abs($0.percent) }
+        expect(magnitudes == magnitudes.sorted(by: >),
+               "the components are strongest first (\(magnitudes))")
+        expect(abs(composition.total - 100) < 1.0,
+               "the shares sum to 100 (\(composition.total))")
+    } else {
+        expect(false, "the surface carries the composition of what it drew")
+    }
+
     // Centring is a pure translation: every vertex moves by exactly the centre,
     // and the bounding radius is the furthest vertex from the origin in the
     // shifted frame, so it is recomputed here rather than assumed invariant.

@@ -38,6 +38,12 @@ struct MoleculeLayout {
     static let atomRadiusScale = 0.38
     static let minimumAtomRadius = 0.14
     static let maximumAtomRadius = 0.95
+    /// The range the orbital transparency slider spans, and the value the
+    /// viewer opens at.  A floor above zero keeps the envelope visible as a
+    /// shape while the atoms inside stay readable.
+    static let minimumOrbitalOpacity = 0.05
+    static let maximumOrbitalOpacity = 1.0
+    static let defaultOrbitalOpacity = 0.55
     /// One radius for every bond, in ångström, so bonds do not thicken just
     /// because a molecule is larger.
     static let bondRadius = 0.075

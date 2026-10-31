@@ -26,6 +26,9 @@ struct MoleculeView: UIViewRepresentable {
     /// Whether the orbital envelope is drawn, so the molecule can be seen
     /// without it.
     var showsOrbital: Bool = true
+    /// How opaque the envelope is drawn.  Applied to the existing material, so
+    /// changing it never rebuilds the mesh.
+    var orbitalOpacity: Double = MoleculeLayout.defaultOrbitalOpacity
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -47,7 +50,8 @@ struct MoleculeView: UIViewRepresentable {
     func updateUIView(_ view: SCNView, context: Context) {
         context.coordinator.update(
             geometry: geometry, elements: elementTable,
-            surface: surface, showsOrbital: showsOrbital)
+            surface: surface, showsOrbital: showsOrbital,
+            orbitalOpacity: orbitalOpacity)
     }
 
     // MARK: - Node graph
@@ -125,7 +129,8 @@ struct MoleculeView: UIViewRepresentable {
         }
 
         func update(geometry: GeometryDescription?, elements: [Element],
-                    surface: OrbitalSurface? = nil, showsOrbital: Bool = true) {
+                    surface: OrbitalSurface? = nil, showsOrbital: Bool = true,
+                    orbitalOpacity: Double = MoleculeLayout.defaultOrbitalOpacity) {
             guard let geometry = geometry, !geometry.atoms.isEmpty else {
                 content.isHidden = true
                 orbitalNode.isHidden = true
@@ -147,9 +152,24 @@ struct MoleculeView: UIViewRepresentable {
 
             let visible = showsOrbital ? surface : nil
             updateOrbital(visible, centreOfMass: geometry.centreOfMass)
+            applyOpacity(orbitalOpacity)
             // The envelope can reach past the atoms, so it takes part in the
             // framing; otherwise a diffuse orbital is cropped at the viewport.
             reframe(to: layout.cameraDistance, orbitalRadius: orbitalNode.isHidden ? 0 : orbitalRadius)
+        }
+
+        /// Sets the envelope's transparency on the materials already built.
+        ///
+        /// Separate from ``updateOrbital`` on purpose: opacity is a render
+        /// property, and routing it through the mesh rebuild would re-derive
+        /// the geometry on every step of the slider drag.
+        private func applyOpacity(_ opacity: Double) {
+            let clamped = min(max(opacity, 0.0), 1.0)
+            orbitalNode.childNodes.forEach { node in
+                node.geometry?.materials.forEach { material in
+                    material.transparency = CGFloat(clamped)
+                }
+            }
         }
 
         /// Builds the orbital nodes, or hides them when there is no surface.
@@ -226,7 +246,7 @@ struct MoleculeView: UIViewRepresentable {
             let material = SCNMaterial()
             material.diffuse.contents = colour
             material.emission.contents = colour.withAlphaComponent(0.25)
-            material.transparency = 0.55
+            material.transparency = CGFloat(MoleculeLayout.defaultOrbitalOpacity)
             material.lightingModel = .physicallyBased
             material.roughness.contents = 0.6
             material.metalness.contents = 0.0
