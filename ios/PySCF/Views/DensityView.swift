@@ -1,14 +1,13 @@
 // DensityView.swift
 //
 // The Density screen: the molecule in 3D with its electron density drawn around
-// it as nested isosurfaces, coloured along one ramp.
+// it as one closed surface, coloured by which atom dominates each point on it.
 //
 // This is the same picture the orbital viewer draws -- a translucent envelope
 // over the ball-and-stick model -- but for the total density rather than a
 // single orbital.  The density is a positive field, so there are no two phases
-// to colour: instead each absolute level the engine drew is a separate shell,
-// and the ramp from red (densest) through orange, yellow and green to blue
-// (most diffuse) is what turns the nesting into a readable gradient.
+// to colour; what it has instead is an owner at every point, and the colour says
+// which atom's electrons dominate the density there.
 //
 // The meshes come from ``PySCFEngine/densitySurface`` on demand rather than
 // riding along with the run, so a run that never opens this screen never pays
@@ -17,7 +16,7 @@
 // ``DensitySliceView`` below is the older plane-through-the-cube renderer.  It
 // is kept because the cube still arrives with a run when the builder's "Density
 // cube" switch is on, and a slice answers a different question -- what the
-// density looks like on a cut plane -- which the shells cannot.
+// density looks like on a cut plane -- which the surface cannot.
 
 import SwiftUI
 
@@ -85,18 +84,44 @@ struct DensitySliceView: View {
         }
     }
 
-    /// Maps a normalised intensity to an RGB tuple, through the shared ramp.
+    /// Maps a normalised intensity to an RGB tuple, through a heat ramp.
     ///
-    /// Routed through ``DensityPalette`` rather than carrying its own stops, so
-    /// the slice and the 3D shells colour the same value the same way.  The
-    /// slice runs dark at zero, which the 3D ramp does not need to: a shell only
-    /// exists where the density is above a level, while the slice draws the
-    /// whole plane including the empty space between molecules.
+    /// The slice draws the *value* of the density across a plane, which is a
+    /// different question from the 3D surface's "whose electrons are these", so
+    /// it carries its own ramp rather than sharing the atom colours.  The ramp
+    /// runs dark at zero because the slice draws the whole plane including the
+    /// empty space between molecules, which the surface never shows.
     static func colour(for intensity: Double) -> (UInt8, UInt8, UInt8, UInt8) {
         let value = min(max(intensity, 0), 1)
         if value <= 0.001 { return (2, 2, 12, 255) }
-        let rgb = DensityPalette.colour(at: value)
-        return (UInt8(rgb.red * 255), UInt8(rgb.green * 255), UInt8(rgb.blue * 255), 255)
+        let rgb = ramp(at: value)
+        return (UInt8(rgb.0 * 255), UInt8(rgb.1 * 255), UInt8(rgb.2 * 255), 255)
+    }
+
+    /// The slice's heat ramp: dark blue through cyan, green and yellow to red.
+    ///
+    /// Interpolated between fixed stops rather than evaluated from a formula, so
+    /// the same value always maps to the same colour.
+    static func ramp(at position: Double) -> (Double, Double, Double) {
+        let stops: [(Double, Double, Double, Double)] = [
+            (0.00, 0.05, 0.05, 0.35),
+            (0.25, 0.05, 0.55, 0.85),
+            (0.50, 0.15, 0.80, 0.35),
+            (0.75, 0.95, 0.85, 0.15),
+            (1.00, 0.90, 0.15, 0.10),
+        ]
+        let clamped = min(max(position, 0), 1)
+        for index in 1..<stops.count where clamped <= stops[index].0 {
+            let lower = stops[index - 1]
+            let upper = stops[index]
+            let span = upper.0 - lower.0
+            let t = span > 0 ? (clamped - lower.0) / span : 0
+            return (lower.1 + (upper.1 - lower.1) * t,
+                    lower.2 + (upper.2 - lower.2) * t,
+                    lower.3 + (upper.3 - lower.3) * t)
+        }
+        let last = stops[stops.count - 1]
+        return (last.1, last.2, last.3)
     }
 }
 
@@ -189,18 +214,18 @@ struct DensityScreen: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let surface = model.densitySurface, !surface.hasGeometry {
-            Text(L("density.emptyShells"))
+            Text(L("density.emptySurface"))
                 .font(.caption)
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// How many shells the picture is drawn with.
+    /// Which absolute contour the surface is drawn at.
     ///
     /// A discrete choice rather than a slider: each step is a full mean-field
-    /// solve and a fresh set of meshes, so a continuous control would queue
-    /// requests faster than they can be answered.
+    /// solve and a fresh mesh, so a continuous control would queue requests
+    /// faster than they can be answered.
     @ViewBuilder
     private var detailControls: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -210,7 +235,7 @@ struct DensityScreen: View {
             Picker(L("density.detail"), selection: Binding(
                 get: { model.densityDetailIndex },
                 set: { index in
-                    model.selectDensityLevels(AppModel.densityLevelChoices[index].levels)
+                    model.selectDensityLevel(AppModel.densityLevelChoices[index].level)
                 }
             )) {
                 ForEach(Array(AppModel.densityLevelChoices.enumerated()), id: \.offset) { index, choice in
@@ -219,7 +244,7 @@ struct DensityScreen: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            Text(LF("density.detail.shells", model.densityLevels.count))
+            Text(LF("density.detail.contour", model.densityLevel))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -261,33 +286,40 @@ struct DensityScreen: View {
                 value: String(format: "%.4f e/bohr³", surface.peak))
             MetricRow(
                 label: L("density.levels"),
-                value: surface.levels.map { String(format: "%.3f", $0) }.joined(separator: ", "))
+                value: String(format: "%.4f e/bohr³", surface.level))
             Text(L("density.note"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
-    /// The colour key: which shell is which density, densest first.
+    /// The colour key: which element each colour on the surface is.
+    ///
+    /// Ordered by how much of the surface the atom dominates, so the atoms that
+    /// matter in the picture come first; a hydrogen buried inside a molecule can
+    /// own no visible surface at all and is left out rather than listed as a
+    /// colour the user will never find.
     @ViewBuilder
     private var legend: some View {
-        if let surface = model.densitySurface, !surface.shells.isEmpty {
+        if let surface = model.densitySurface, !surface.atoms.isEmpty {
+            let counts = surface.vertexCounts
+            let shown = surface.atoms
+                .filter { (counts[$0.index] ?? 0) > 0 }
+                .sorted { (counts[$0.index] ?? 0) > (counts[$1.index] ?? 0) }
             VStack(alignment: .leading, spacing: 6) {
                 Text(L("density.legend"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                // Descending level, so the list reads from the densest core down
-                // to the diffuse cloud -- the same order the ramp runs.
-                ForEach(Array(surface.shells.reversed().enumerated()), id: \.offset) { _, shell in
+                ForEach(shown) { atom in
                     HStack(spacing: 8) {
-                        let colour = DensityPalette.colour(at: surface.palettePosition(of: shell))
+                        let colour = DensityPalette.parse(atom.colorHex)
                         RoundedRectangle(cornerRadius: 3)
                             .fill(Color(red: colour.red, green: colour.green, blue: colour.blue))
                             .frame(width: 22, height: 12)
-                        Text(String(format: "%.3f e/bohr³", shell.level))
+                        Text(atom.element)
                             .font(.caption.monospacedDigit())
                         Spacer(minLength: 8)
-                        Text(LF("density.legend.triangles", shell.triangleCount))
+                        Text(LF("density.legend.vertices", counts[atom.index] ?? 0))
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }

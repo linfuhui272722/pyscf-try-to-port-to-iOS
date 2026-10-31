@@ -213,17 +213,19 @@ final class AppModel: ObservableObject {
     /// Identifies the newest pending isovalue redraw, so a drag issues one.
     private var orbitalRedrawToken = 0
 
-    /// The electron density as nested shells, once fetched for the 3D view.
+    /// The electron density as one surface coloured by atom, once fetched for
+    /// the 3D view.
     @Published var densitySurface: DensitySurface?
-    /// Which absolute density levels the picture is drawn at.  Fewer levels is
-    /// a coarser, faster picture; the engine's full set is the default.
-    @Published var densityLevels: [Double] = AppModel.defaultDensityLevels
-    /// How opaque the density cloud is drawn.
+    /// The absolute density contour the surface is drawn at, in electrons per
+    /// cubic Bohr.  A lower value wraps the molecule loosely; a higher one
+    /// tightens onto the atoms.
+    @Published var densityLevel: Double = AppModel.defaultDensityLevel
+    /// How opaque the density surface is drawn.
     @Published var densityOpacity: Double = MoleculeLayout.defaultDensityOpacity
     /// Whether the density cloud is drawn, so the molecule can be inspected
     /// alone.  The orbital viewer has the same switch for the same reason.
     @Published var showsDensity: Bool = true
-    /// Set while the density shells are being computed.
+    /// Set while the density surface is being computed.
     @Published var isLoadingDensity: Bool = false
     /// Identifies the newest density request, so a slow earlier one cannot
     /// overwrite the answer the user is waiting for.
@@ -238,26 +240,28 @@ final class AppModel: ObservableObject {
     /// fetch would otherwise append an entry; this is what keeps one entry per
     /// orbital rather than one per slider step.
     private var lastRecordedOrbitalView: String?
-    /// The density view last written, as its level list.
+    /// The density view last written, as its contour.
     private var lastRecordedDensityView: String?
 
-    /// The density levels offered by the detail control, coarsest first.
+    /// The density contour offered by the detail control, loosest first.
     ///
-    /// A subset of the engine's own ladder: the picture is nested shells, and
-    /// past a handful of them the extra surfaces are hidden inside each other
-    /// while the mesh cost keeps rising.
-    static let densityLevelChoices: [(label: String, levels: [Double])] = [
-        ("density.detail.low", [0.01, 0.1]),
-        ("density.detail.medium", [0.005, 0.02, 0.1, 0.5]),
-        ("density.detail.high", [0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]),
+    /// The lowest value wraps the whole molecule in one closed surface, which is
+    /// the picture the screen is for.  The higher ones tighten the surface onto
+    /// the atoms and eventually break it into one lobe per atom -- a different
+    /// picture, offered because it is the one that shows the atoms' own density
+    /// most clearly, but not the default.
+    static let densityLevelChoices: [(label: String, level: Double)] = [
+        ("density.detail.low", 0.002),
+        ("density.detail.medium", 0.01),
+        ("density.detail.high", 0.05),
     ]
 
-    /// The default detail, matching the engine's full ladder.
-    static let defaultDensityLevels: [Double] = densityLevelChoices[2].levels
+    /// The default contour, matching the engine's own default.
+    static let defaultDensityLevel: Double = densityLevelChoices[0].level
 
-    /// Which detail choice ``densityLevels`` currently matches, if any.
+    /// Which detail choice ``densityLevel`` currently matches, if any.
     var densityDetailIndex: Int {
-        AppModel.densityLevelChoices.firstIndex { $0.levels == densityLevels } ?? 2
+        AppModel.densityLevelChoices.firstIndex { $0.level == densityLevel } ?? 0
     }
 
     @Published var scanI: Int = 0
@@ -337,6 +341,12 @@ final class AppModel: ObservableObject {
         history = []
         log("deleted all history")
     }
+
+    /// The history grouped by molecule, newest group first.
+    ///
+    /// Computed rather than stored: it is derived entirely from ``history``, and
+    /// a second stored copy could drift from it.
+    var historyGroups: [HistoryGroup] { HistoryGrouping.groups(history) }
 
     /// The text export of one entry.
     func historyText(for entry: HistoryEntry) -> String {
@@ -425,10 +435,10 @@ final class AppModel: ObservableObject {
                                                  method: referenceMethodLabel).encoded())
     }
 
-    /// Records that a density cloud was drawn.
+    /// Records that a density surface was drawn.
     ///
-    /// Stored as the recipe too: the levels, the method and the molecule.  The
-    /// shells are several megabytes and are rebuilt when the entry is opened.
+    /// Stored as the recipe too: the contour, the method and the molecule.  The
+    /// mesh is several megabytes and is rebuilt when the entry is opened.
     func recordDensityView(_ surface: DensitySurface) {
         recordHistory(kind: .density,
                       method: surface.method,
@@ -440,7 +450,7 @@ final class AppModel: ObservableObject {
                       energy: surface.energy,
                       converged: true,
                       wallTimeMs: surface.wallTimeMs,
-                      summary: LF("history.summary.density", surface.levels.count),
+                      summary: LF("history.summary.density", surface.atoms.count),
                       payload: DensityViewRecord(surface: surface,
                                                  method: referenceMethodLabel).encoded())
     }
@@ -689,7 +699,7 @@ final class AppModel: ObservableObject {
             xc: entry.functional ?? "b3lyp",
             charge: entry.charge,
             spin: entry.spin,
-            levels: record.levels)
+            level: record.level)
     }
 
     /// Runs the selected calculation.
@@ -882,7 +892,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Fetches the electron density as nested shells and shows it in 3D.
+    /// Fetches the electron density as one atom-coloured surface and shows it in 3D.
     ///
     /// Kept out of ``run`` for the same reason the orbital surface is: it is a
     /// second round trip, and the mesh is only wanted when the Density screen is
@@ -908,16 +918,16 @@ final class AppModel: ObservableObject {
                 xc: functional,
                 charge: charge,
                 spin: spin,
-                levels: densityLevels)
+                level: densityLevel)
             guard token == densityRequestToken else { return }
             densitySurface = surface
             if !surface.hasGeometry {
-                log("density: no shell produced geometry at these levels")
+                log("density: no surface produced geometry at this contour")
             }
             // Recorded once per distinct view, not once per fetch: reopening
             // the screen or stepping the detail control back and forth would
-            // otherwise fill the history with the same cloud.
-            let key = surface.levels.map { String(format: "%.6f", $0) }.joined(separator: ",")
+            // otherwise fill the history with the same surface.
+            let key = String(format: "%.6f", surface.level)
             if key != lastRecordedDensityView {
                 lastRecordedDensityView = key
                 recordDensityView(surface)
@@ -928,9 +938,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Switches which density levels the picture is drawn at and refetches it.
-    func selectDensityLevels(_ levels: [Double]) {
-        densityLevels = levels
+    /// Switches the density contour the picture is drawn at and refetches it.
+    func selectDensityLevel(_ level: Double) {
+        densityLevel = level
         densityRequestToken += 1
         densitySurface = nil
         Task { await loadDensitySurface() }

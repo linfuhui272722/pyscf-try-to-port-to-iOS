@@ -106,12 +106,13 @@ fixtures = {
     "orbital_surface_lmo": call("orbital_surface", {"atoms": WATER, "basis": "sto-3g", "method": "RHF",
                                                     "source": "pm-mulliken", "index": 0,
                                                     "pointsPerAxis": 24}),
-    # The Density screen draws the total density the same way, as nested shells
-    # rather than a plane through the cube.  The level list is the app's coarse
-    # choice, and the resolution is below its default, both to keep the fixture
-    # small: the nesting and framing rules do not depend on either.
+    # The Density screen draws the total density the same way, as one surface at
+    # a single contour with an atom attribution per vertex, rather than as a
+    # plane through the cube.  The contour is the app's default and the
+    # resolution is below the app's, both to keep the fixture small: the
+    # attribution and framing rules do not depend on either.
     "density_surface": call("density_surface", {"atoms": WATER, "basis": "sto-3g", "method": "RHF",
-                                                "levels": [0.01, 0.1], "pointsPerAxis": 24}),
+                                                "level": 0.002, "pointsPerAxis": 24}),
     "mp2": call("mp2", {"atoms": WATER, "basis": "sto-3g", "reference": "RHF", "include": []}),
     "ccsd": call("ccsd", {"atoms": WATER, "basis": "sto-3g", "reference": "RHF", "include": []}),
     "bond_scan": call("bond_scan", {"atoms": WATER, "i": 0, "j": 1, "method": "RHF",
@@ -185,6 +186,7 @@ LD_LIBRARY_PATH="$SWIFTLIBS:${LD_LIBRARY_PATH:-}" \
   "$ROOT/ios/PySCF/Models/HistoryEntry.swift" \
   "$ROOT/ios/PySCF/Models/ViewRecords.swift" \
   "$ROOT/ios/PySCF/Models/HistoryStore.swift" \
+  "$ROOT/ios/PySCF/Models/HistoryGrouping.swift" \
   "$ROOT/ios/PySCF/Models/HistoryReport.swift"
 
 echo ">> running the history checks"

@@ -114,8 +114,7 @@ enum HistoryReport {
             lines.append(row("Source", orbital.source))
             lines.append(row("Isovalue", String(format: "%.6f", orbital.isovalue)))
         case .density(let density):
-            lines.append(row("Levels", density.levels
-                .map { String(format: "%.4f", $0) }.joined(separator: ", ")))
+            lines.append(row("Contour", String(format: "%.4f e/bohr³", density.level)))
         }
         lines.append("")
         return lines

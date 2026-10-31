@@ -1616,20 +1616,19 @@ def run_orbital_surface(params: dict) -> dict:
     }
 
 
-#: The absolute density levels, in electrons per cubic Bohr, that the 3D
-#: density picture draws as nested shells.  Absolute rather than a fraction of
-#: the peak, unlike the orbital viewer: the peak density sits on the nucleus and
-#: varies by orders of magnitude between elements and bases, so a fraction of it
-#: would draw a picture whose meaning changed with the molecule.  A level here
-#: is the familiar "is that a bond or a lone pair" contour a chemistry textbook
-#: uses.  0.002 e/bohr^3 wraps the molecule in a cloud; 1.0 e/bohr^3 is close
-#: enough to the nuclei to sit inside the cores.
-DENSITY_LEVELS = (0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)
+#: The absolute density, in electrons per cubic Bohr, the 3D density view draws
+#: its single surface at.  Absolute rather than a fraction of the peak, unlike
+#: the orbital viewer: the peak density sits on a nucleus and varies by orders
+#: of magnitude between elements and bases, so a fraction of it would draw a
+#: picture whose meaning changed with the molecule.  This value is the familiar
+#: "molecular envelope" contour a chemistry textbook uses -- low enough that one
+#: closed surface wraps the whole molecule.
+DENSITY_CONTOUR = 0.002
 
 #: How far past the atoms the density box starts, and the most it may grow while
-#: chasing the outermost shell.  A diffuse anion's cloud can reach several
-#: ångström out; past this the box is large enough that the spacing has coarsened
-#: more than the extra completeness is worth.
+#: chasing the surface.  A diffuse cloud can reach several ångström out; past
+#: this the box is large enough that the spacing has coarsened more than the
+#: extra completeness is worth.
 _DENSITY_PADDING = 3.0
 _MAX_DENSITY_PADDING = 9.0
 
@@ -1639,76 +1638,138 @@ _MAX_DENSITY_PADDING = 9.0
 _MAX_DENSITY_POINTS_PER_AXIS = 56
 
 
+def _density_vertex_atoms(mf, atoms: list[dict], vertices: list) -> dict:
+    """Which atom's electrons dominate the density at each surface vertex.
+
+    The atomic blocks of the density matrix partition the basis functions, so
+    ``rho_a(r) = sum_{i,j in a} ao_i(r) D_ij ao_j(r)`` sums over atoms to the
+    total density with no double counting.  Evaluating those blocks only at the
+    mesh vertices -- rather than on the whole grid -- is what keeps this cheap:
+    the vertices are a few thousand points against a grid of tens of thousands.
+
+    Each vertex is assigned the atom with the largest contribution, and that
+    atom's share of the local density is carried alongside, so a region shared
+    between two atoms can be drawn as shared rather than as belonging wholly to
+    one.  Where the blocks cancel to nothing the nearest nucleus is used; that
+    cannot happen on a positive-level contour, but a corrupted payload should
+    not crash the engine.
+    """
+    from .elements import BY_SYMBOL
+
+    count = len(vertices)
+    atoms_json = [
+        {
+            "index": index,
+            "element": str(atom["element"]),
+            "color": getattr(BY_SYMBOL.get(str(atom["element"])), "color", "#808080"),
+        }
+        for index, atom in enumerate(atoms)
+    ]
+    if count == 0:
+        return {"atoms": atoms_json, "atomIndex": [], "atomShare": []}
+
+    ranges = _ao_ranges(mf)
+    dm = np.asarray(mf.make_rdm1(), dtype=float)
+    if dm.ndim == 3:  # unrestricted references carry alpha/beta blocks
+        dm = dm[0] + dm[1]
+    coords = np.asarray(vertices, dtype=float).reshape(-1, 3)
+    centres = geometry.atoms_to_coords(atoms)
+
+    contributions = np.zeros((count, len(ranges)), dtype=float)
+    # Slabbed for the same reason the grid evaluation is: the dense AO matrix
+    # for every vertex at once is what peaks, and a jetsam kill is silent.
+    chunk = max(1, (1 << 20) // max(int(mf.mol.nao_nr()), 1))
+    for start in range(0, count, chunk):
+        stop = min(start + chunk, count)
+        # The vertices are in ångström; ``eval_gto`` reads its argument in Bohr.
+        block = mf.mol.eval_gto("GTOval", coords[start:stop] / _BOHR_TO_ANGSTROM)
+        for index, (first, last) in enumerate(ranges):
+            columns = block[:, first:last]
+            contributions[start:stop, index] = np.einsum(
+                "vi,ij,vj->v", columns, dm[first:last, first:last], columns)
+
+    totals = contributions.sum(axis=1)
+    dominant = np.argmax(contributions, axis=1)
+    degenerate = totals <= 1e-12
+    if degenerate.any():
+        distances = np.linalg.norm(
+            coords[degenerate][:, None, :] - centres[None, :, :], axis=2)
+        dominant[degenerate] = np.argmin(distances, axis=1)
+    safe = np.where(degenerate, 1.0, totals)
+    share = contributions[np.arange(count), dominant] / safe
+    share[degenerate] = 1.0
+
+    return {
+        "atoms": atoms_json,
+        "atomIndex": [int(value) for value in dominant],
+        "atomShare": [round(float(value), 4) for value in share],
+    }
+
+
 def run_density_surface(params: dict) -> dict:
-    """The total electron density as nested isosurfaces, for the 3D viewer.
+    """The total electron density as one isosurface, coloured by atom.
 
-    The density is a positive field, so it has no two phases to colour the way
-    an orbital does.  What it has instead is a range of values, and drawing a
-    shell at each of several absolute levels turns that range into depth: the
-    innermost shell (the highest level, where the density is greatest) is the
-    core region and the outermost is the cloud that reaches furthest out.  The
-    Swift side colours the shells along one ramp, so the picture reads as "this
-    much density" rather than as a set of unrelated surfaces.
+    The picture is a single closed surface wrapping the molecule, not a set of
+    nested shells: the surface is the contour of the total density at one
+    absolute level, and its colour says which atom's electrons dominate the
+    density at each point on it.  That is the picture that answers "where is the
+    density, and whose is it", and it removes the one real failure mode of the
+    shell version -- with several translucent shells at the same render order,
+    an outer shell hides the inner ones from most angles, so only part of the
+    colouring is visible.
 
-    ``levels`` overrides ``DENSITY_LEVELS``; a request may ask for fewer shells,
-    which is the knob the UI's detail slider turns.
+    ``level`` is the contour, in electrons per cubic Bohr.  A low value wraps
+    the whole molecule in one surface; a high one tightens onto the atoms and
+    eventually breaks into separate lobes.
 
-    The box is fitted to the lowest level actually drawn, exactly as the orbital
-    viewer fits its box to its isosurface: a shell that meets the box wall is
-    closed against that wall by the marching step and reads as a shell spanning
-    the whole box rather than as a cloud around the molecule.  The resolution is
-    held at the atoms'-box spacing as the box grows, up to the same ceiling.
+    The box is fitted so the surface does not meet a wall, exactly as the
+    orbital viewer fits its box to its isosurface: a surface that meets the box
+    wall is closed against that wall by the marching step and reads as a shape
+    spanning the whole box rather than as a cloud around the molecule.  The
+    resolution is held at the atoms'-box spacing as the box grows, up to a
+    ceiling, because the cost is cubic in the point count and this runs on a
+    phone.  ``clipped`` reports when the ceiling was reached with the surface
+    still touching a wall.
 
     Vertices are in absolute ångström, in the same frame as the atoms, so the
-    Swift side adds the shells to the ball-and-stick scene without a transform.
+    Swift side adds the surface to the ball-and-stick scene without a transform.
     """
     start = time.perf_counter()
     mf, atoms, basis, method, _log = _run_mean_field(params)
-    requested = params.get("levels")
-    if requested:
-        levels = sorted({float(level) for level in requested if float(level) > 0.0})
-    else:
-        levels = list(DENSITY_LEVELS)
-    if not levels:
-        raise ValueError("levels must contain at least one positive value")
+    level = float(params.get("level", DENSITY_CONTOUR))
+    if level <= 0.0:
+        raise ValueError(f"level must be a positive density, not {level}")
     points = int(params.get("pointsPerAxis", 40))
     if points < 8:
         raise ValueError(f"pointsPerAxis must be at least 8, not {points}")
 
+    coords = geometry.atoms_to_coords(atoms)
     # The spacing of the box that fits the atoms, which the resolution should
-    # stay at as the box grows to contain the outermost shell.
-    span = float(np.ptp(geometry.atoms_to_coords(atoms), axis=0).max()) + 2.0 * _DENSITY_PADDING
+    # stay at as the box grows to contain the surface.
+    span = float(np.ptp(coords, axis=0).max()) + 2.0 * _DENSITY_PADDING
     target_step = span / max(points - 1, 1)
 
     padding = _DENSITY_PADDING
     while True:
-        width = float(np.ptp(geometry.atoms_to_coords(atoms), axis=0).max()) + 2.0 * padding
+        width = float(np.ptp(coords, axis=0).max()) + 2.0 * padding
         grid_points = min(int(np.ceil(width / target_step)) + 1, _MAX_DENSITY_POINTS_PER_AXIS)
         grid_points = max(grid_points, points)
         values, origin, step = _density_values(mf, atoms, grid_points, padding)
         peak = float(values.max())
         if peak <= 0.0:
             raise ValueError("the density is zero everywhere on the grid")
-        outermost = min(levels)
         faces = (values[0], values[-1], values[:, 0], values[:, -1],
                  values[:, :, 0], values[:, :, -1])
-        if max(float(np.abs(face).max()) for face in faces) < outermost:
+        if max(float(np.abs(face).max()) for face in faces) < level:
             break
         if padding >= _MAX_DENSITY_PADDING:
             break
         padding = min(padding * 1.5, _MAX_DENSITY_PADDING)
-    clipped = max(float(np.abs(face).max()) for face in faces) >= outermost
+    clipped = max(float(np.abs(face).max()) for face in faces) >= level
 
-    shells = []
-    for level in levels:
-        mesh = orbital_surface.isosurface(
-            values, values.shape, np.asarray(origin), np.asarray(step), level
-        )
-        shells.append({
-            "level": level,
-            "fraction": round(level / peak, 8),
-            **mesh,
-        })
+    mesh = orbital_surface.isosurface(
+        values, values.shape, np.asarray(origin), np.asarray(step), level)
+    attribution = _density_vertex_atoms(mf, atoms, mesh["vertices"])
 
     wall_ms = (time.perf_counter() - start) * 1000.0
     return {
@@ -1719,13 +1780,17 @@ def run_density_surface(params: dict) -> dict:
         "nElectrons": int(mf.mol.nelectron),
         "nBasis": int(mf.mol.nao_nr()),
         "peak": round(peak, 8),
-        "levels": levels,
+        "level": level,
         "pointsPerAxis": points,
         "gridPointsPerAxis": int(values.shape[0]),
         "gridStep": round(max(float(v) for v in step), 6),
         "gridOrigin": [round(float(v), 6) for v in origin],
         "clipped": clipped,
-        "shells": shells,
+        "atoms": attribution["atoms"],
+        "atomIndex": attribution["atomIndex"],
+        "atomShare": attribution["atomShare"],
+        "triangles": len(mesh["indices"]) // 3,
+        **mesh,
     }
 
 

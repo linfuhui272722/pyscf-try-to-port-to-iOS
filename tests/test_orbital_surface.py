@@ -417,13 +417,53 @@ def test_orbital_surface_is_translation_covariant():
     )
 
 
+def test_orbital_surface_winding_agrees_with_the_outward_normals():
+    """Every triangle is wound so its normal points outward.
+
+    The viewer culls back faces on both the orbital and the density surface, so
+    the winding has to be consistent: with the raw marching-tetrahedra winding
+    about half the triangles face inward, and culling then removes them, tearing
+    holes in the lobe from every angle.  The reference is the summed vertex
+    normals, which are the negated field gradient and point outward by
+    construction.
+    """
+    payload = engine.dispatch("orbital_surface", {
+        "atoms": WATER, "basis": "sto-3g", "method": "RHF",
+        "source": "mo", "index": 4, "pointsPerAxis": 32, "isovalue": 0.05,
+    })
+    for name in ("positive", "negative"):
+        vertices, normals, indices = _mesh(payload[name])
+        if indices.size == 0:
+            continue
+        triangles = indices.reshape(-1, 3)
+        geometric = np.cross(vertices[triangles[:, 1]] - vertices[triangles[:, 0]],
+                             vertices[triangles[:, 2]] - vertices[triangles[:, 0]])
+        reference = normals[triangles].sum(axis=1)
+        agrees = np.einsum("ij,ij->i", geometric, reference) > 0
+        assert agrees.all(), (
+            f"{name}: {int((~agrees).sum())} of {len(agrees)} triangles wind inward"
+        )
+
+
 def test_orbital_surface_encloses_a_physical_volume():
     """The drawn envelope is orbital-sized, not molecule-sized.
 
     With the grid in the wrong units the contour is inflated until it spans the
     whole molecule; water's atoms span 0.9 A, and the inflated envelope spanned
-    over 5 A.  The correct 0.05 contour spans about 2 A, so the bound below
-    separates the two without pinning the number to the grid resolution.
+    over 5 A.  The correct 0.05 contour is about 2 A across, so a bound on the
+    radius separates the two without pinning the number to the grid resolution.
+
+    The size is measured as the maximum distance from the lobe's centroid rather
+    than as a divergence-theorem volume, deliberately.  That volume is not
+    available here: the marching output is **not** watertight -- the same
+    crossing point computed from the two directions of an edge can differ in the
+    last bit, so the 6-decimal weld occasionally fails to merge them, leaving
+    duplicate triangles and boundary edges (an analytic sphere comes out with
+    1819 duplicate triangles out of 6624).  A volume computed over a non-closed
+    mesh is not the enclosed volume, and with the winding fixed to be consistent
+    the divergence sum no longer cancels the way it happened to when the winding
+    was random.  A radius is a local measure of the vertices and does not care
+    whether the mesh closes.
     """
     payload = engine.dispatch("orbital_surface", {
         "atoms": WATER, "basis": "sto-3g", "method": "RHF",
@@ -438,13 +478,19 @@ def test_orbital_surface_encloses_a_physical_volume():
         f"envelope this large is the wrong-units signature"
     )
 
-    triangles = vertices[indices.reshape(-1, 3)]
-    shift = vertices.mean(axis=0)
-    a, b, c = (triangles - shift)[:, 0], (triangles - shift)[:, 1], (triangles - shift)[:, 2]
-    volume = abs(float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
-    # A valence lobe at this contour is a couple of cubic ångström; the bound is
-    # loose because the grid spacing sets the last digit.
-    assert 0.1 < volume < 4.0, f"the HOMO lobe encloses {volume:.3f} A^3"
+    radii = np.linalg.norm(vertices - vertices.mean(axis=0), axis=1)
+    assert 0.4 < radii.max() < 1.6, (
+        f"the HOMO lobe reaches {radii.max():.2f} A from its centroid; a "
+        f"valence lobe is about 1 A, and a wrong-units envelope would be 2.5 A+"
+    )
+    # The lobe must be a lobe, not a shell of loose points: a solid sphere of
+    # this radius would have an RMS radius of 0.775 r, and the mesh is close to
+    # it.  A scattered or half-culled mesh would sit far below.
+    rms = float(np.sqrt((radii ** 2).mean()))
+    assert 0.5 * radii.max() < rms < radii.max(), (
+        f"the lobe's RMS radius {rms:.2f} does not match its extent "
+        f"{radii.max():.2f}; the surface is not filling its own envelope"
+    )
 
 
 def test_orbital_surface_keeps_its_resolution_when_the_box_grows():

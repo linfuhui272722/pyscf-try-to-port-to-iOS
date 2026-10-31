@@ -378,77 +378,128 @@ flat accessor yields **no vertices** while the triangle count stays right (see
 just offset from the molecule (`OrbitalMesh` centres on the same vector as
 `MoleculeLayout`).
 
-### The density viewer draws nested shells, not a slice
+### The density viewer draws one surface coloured by atom
 
-The Density screen shows the total electron density the same way the orbital
-viewer shows an orbital: the whole molecule in 3D, wrapped in a translucent
-envelope. The difference is that the density is a single positive field, so
-there is no sign to colour by; the range of values is turned into depth instead.
-One shell is drawn at each of several **absolute** levels, and the shells nest —
-the highest level is the small dense core, the lowest is the cloud that reaches
-furthest out. `DensityPalette` colours them along one ramp so the picture reads
-as "this much density" rather than as a set of unrelated surfaces.
+The Density screen shows the total electron density as the whole molecule in 3D
+wrapped in a translucent envelope. It is **one closed surface at a single
+absolute contour**, not a set of nested shells, and it is **coloured by which
+atom's electrons dominate the density at each point** rather than by the
+density's value.
 
-The screen's primary picture is the 3D cloud; `DensitySliceView` is kept as a
-secondary renderer because the cube still arrives with a run when the builder's
-"Density cube" switch is on, and a cut plane answers a different question (what
-the density looks like on a slice) than the shells do.
+Both of those are deliberate. Colouring by density value says only "high here,
+low there", which the shape of the surface already shows; colouring by atom
+answers "whose electrons are these", which is what a density plot is read for.
+And one surface rather than several removes a real failure mode: with nine
+translucent shells at one render order, an outer shell hid the inner ones from
+most angles, so only part of the colouring was visible — the bug the user
+reported as "at some angles only part of the colours show".
 
 * `run_density_surface` in `engine.py` — the counterpart of
-  `run_orbital_surface`. `levels` overrides `DENSITY_LEVELS`; the levels are
-  **absolute** densities in electrons per cubic Bohr, not fractions, so the same
-  level means the same density on any molecule (the orbital viewer's isovalue is
-  a fraction of the orbital's own peak for the opposite reason — orbitals differ
-  in scale by orders of magnitude between basis sets, total densities do not).
-* **The box is fitted to the lowest level actually drawn, and the resolution
-  follows it.** A shell that meets the box wall is closed against that wall by
-  the marching step and reads as a shell spanning the whole box rather than as a
-  cloud around the molecule. The padding grows until the outermost level no
-  longer touches a face, and the point count grows with the box so the spacing
-  stays at the atoms'-box value — both capped (`_MAX_DENSITY_PADDING`,
-  `_MAX_DENSITY_POINTS_PER_AXIS`), because the cube is cubic in the point count
-  and this runs on a phone. `clipped` reports when the cap was reached with the
-  cloud still touching a wall.
-* `_density_values` in `engine.py` evaluates the field on the grid and
-  `orbital_surface.isosurface` turns it into a shell, so a density shell is
-  welded and normal-averaged exactly like an orbital lobe; there is no separate
-  density-surface module.
-* **The bracketing invariant is the authoritative test.** Every mesh vertex of a
-  shell at level `L` must sit in a cell whose corner values bracket `L`, since
-  the vertex is the linear interpolation of one such crossing. This is exact and
-  local: it caught nothing when it was first written, which is the point — it
-  cannot drift with grid spacing the way a global check can.
-* **Signed volume is not a test.** It was tried and dropped: a shell can be
-  open where it meets the box wall, so its divergence-theorem volume is
-  meaningless, and the marching output is triangles rather than a closed
-  surface. Do not reintroduce it as a cheaper check.
+  `run_orbital_surface`. `level` is the contour, an **absolute** density in
+  electrons per cubic Bohr, not a fraction, so the same value means the same
+  density on any molecule (the orbital viewer's isovalue is a fraction of the
+  orbital's own peak for the opposite reason — orbitals differ in scale by
+  orders of magnitude between basis sets, total densities do not). A low value
+  wraps the molecule; a high one tightens onto the atoms and eventually breaks
+  the surface into one lobe per atom.
+* `_density_vertex_atoms` partitions the density matrix into **atomic blocks** —
+  `rho_a(r) = sum_{i,j in a} ao_i(r) D_ij ao_j(r)` over `aoslice_by_atom` — so
+  the blocks sum to the total density with no double counting. Each vertex is
+  assigned the atom with the largest contribution, plus that atom's share of the
+  local density. The blocks are evaluated **only at the mesh vertices** (a few
+  thousand points) rather than on the whole grid (tens of thousands), which is
+  what keeps it cheap. A vertex whose blocks cancel to nothing falls back to the
+  nearest nucleus; that cannot happen on a positive-level contour, but it must
+  not crash on a corrupted payload.
+* **The bracketing invariant is the authoritative test.** Every mesh vertex at
+  contour `L` must sit in a cell whose corner values bracket `L`, since the
+  vertex is the linear interpolation of one such crossing. This is exact and
+  local: it cannot drift with grid spacing the way a global check can.
+* **The attribution is tested against the definition, not the helper.** The test
+  recomputes the atomic blocks from `aoslice_by_atom` and the density matrix; a
+  test that called `_density_vertex_atoms` would only check it against itself.
+  Helium is the sharp case: one atom owns every vertex with a share of exactly 1.
+* **Signed volume is not a test, and the mesh is not watertight.** The
+  divergence-theorem volume was tried and dropped, because the mesh `isosurface`
+  returns is **not a closed 2-manifold**. Measured on an analytic sphere (a
+  field whose isosurface is exactly a sphere, so nothing about the field is
+  ambiguous): at a 24³ grid the raw output has 6624 triangles and 10137 edges,
+  and only 2660 of those edges (26%) are shared by exactly two triangles — a
+  closed triangulation would share essentially all of them, and 4895 edges are
+  used only once. So the enclosed
+  volume is not defined by the mesh, and the divergence sum is not it. It is
+  *silently* wrong in both directions: with the old inconsistent winding the sum
+  mostly cancelled and the volume looked plausible (1.68 Å³ for water's HOMO)
+  purely by accident; with the winding made consistent the same sum gives
+  29.38 Å³, neither of which is the lobe's volume. The cause is not welding —
+  the weld is stable (the same 3314 vertices come out whether the positions are
+  rounded to 4 or 8 decimals, and no two vertices are closer than 2e-4 Å), it is
+  structural in how the six tetrahedra of neighbouring cells triangulate their
+  shared faces. It is invisible on screen — SceneKit draws each triangle
+  independently and the surface is drawn translucent, so a T-junction shows as
+  nothing — but it does mean the mesh cannot be used for anything that needs
+  topology. Size checks should use a local statistic such as the vertex radius,
+  which does not care whether the mesh closes.
+* **Duplicate triangles are removed after the fact.** The contour crosses the
+  internal faces of the six-tetrahedron split from both sides, so both
+  tetrahedra emit the same triangle on such a face: identical vertex set and
+  identical order. `isosurface` drops the repeats by sorting each triangle's
+  three indices and keeping the first of each key, which is exact (a triangle is
+  determined by its three vertices) and removes about a quarter of them — 4805
+  from 6624 on the sphere above — which is payload and GPU time the phone does
+  not spend.
 * **A trilinear check is weaker than bracketing.** Sampling the reconstructed
   field back at the vertex and asking it to equal the level looks equivalent but
   is not: trilinear interpolation is not the inverse of the linear interpolation
-  the marching step uses, so it passes meshes that bracketing rejects. It also
-  needs a `_density_at` helper that duplicates the field evaluation.
+  the marching step uses, so it passes meshes that bracketing rejects.
+* **`isosurface` orients every triangle outward, and the renderer culls back
+  faces.** Marching tetrahedra names its edges from whichever vertex is outside,
+  so the raw winding came out about half in and half out. That was invisible
+  while the material was double-sided; it is wrong the moment back-face culling
+  is on, because half the triangles vanish and the surface looks torn. The fix
+  is in `isosurface`: each triangle is flipped so its geometric normal agrees
+  with the summed **vertex normals**, which are the negated field gradient and
+  point outward by construction — reliable where the winding is not. The density
+  test asserts 100% agreement; `makeSurfaceNode`/`makeColouredNode` set
+  `isDoubleSided = false` because of it.
 * `gridStep` is the **maximum** step over the three axes, not a per-axis triple:
   the box is cubic but the atoms are not, so the steps differ and reporting one
   of them makes an anisotropic grid look isotropic.
-* `DensityPalette.position(of:among:)` maps an absolute level onto the ramp
-  **logarithmically**. The levels span 0.002 to 0.02 and beyond, so a linear
-  mapping puts nearly all of them in the last few percent of the ramp and the
-  shells come out nearly the same colour. The layout test asserts the ramp spans
-  the shells for this reason.
-* The mesh reaches past the atoms, so `DensityMeshSet.boundingRadius` must take
-  part in the camera framing or a diffuse shell is cropped. `boundingRadius` is
+* `DensityPalette` maps an atom to a colour, not a density value to a ramp. The
+  engine sends each atom's **CPK hex** in the payload, so the surface and the
+  ball-and-stick model agree about which colour means which element. A share
+  below 1 mixes the atom's colour toward a neutral grey by at most 35%, so a
+  region shared between two atoms reads as a blend without washing every atom to
+  the same tone. An unparseable hex or a missing attribution falls back to the
+  neutral grey, which reads as "unattributed" rather than as a deliberate colour.
+* The mesh reaches past the atoms, so `DensityMesh.boundingRadius` must take
+  part in the camera framing or a diffuse surface is cropped. `boundingRadius` is
   measured **from the given centre**, so it legitimately changes with the centre;
   the invariant worth testing is that every vertex moves by exactly the centre,
   which is what the layout test checks.
 
 ### Saved 3D pictures are recipes, not meshes
 
-Opening a history entry for an orbital or a density cloud re-runs the engine
-rather than storing the mesh. The mesh for a density cloud at the app's
+Opening a history entry for an orbital or a density surface re-runs the engine
+rather than storing the mesh. The mesh for a density surface at the app's
 resolution is megabytes, and `HistoryStore.droppedFields` exists to keep entries
 in the tens of kilobytes, so a view entry stores only what is needed to rebuild
-the picture — the source, index, isovalue, or level list, plus the reference
+the picture — the source, index, isovalue, or contour, plus the reference
 method — in `ViewRecords.swift`.
+
+### History groups by molecule
+
+The history list is grouped by the molecule each entry was run on, so an orbital
+view and a density view of the same molecule sit together rather than wherever
+their timestamps happened to put them. `HistoryGrouping` builds the group key
+from the **parsed** atoms (`AtomSpec.parse`) rather than the raw spec text, so
+two entries that write the same molecule with different whitespace, separators
+or number formatting land in one group; charge and spin are part of the key, so
+the same atoms at a different charge are a different species. A spec that does
+not parse falls back to its raw text, so an entry is never dropped and never
+merged with an unrelated one by an empty key. `AppModel.historyGroups` is
+computed from `history` rather than stored, so the two cannot drift.
+
 
 * The kind is told from the payload's own marker (`ViewRecord.init?`), not from
   the entry's stored kind, so a payload and its label cannot disagree about what

@@ -256,6 +256,34 @@ def isosurface(
     lengths = np.where(lengths < 1e-30, 1.0, lengths)
     vertex_normals = vertex_normals / lengths[:, None]
 
+    # Orient every triangle so its winding agrees with the outward vertex
+    # normals.  Marching tetrahedra names its edges from whichever vertex is
+    # outside, so the raw winding comes out about half in and half out -- fine
+    # for a double-sided surface, wrong the moment a viewer culls back faces.
+    # The vertex normals are reliable where the winding is not: they are the
+    # negated field gradient, which points outward by construction, so they are
+    # the reference to orient against.
+    triangles = inverse.reshape(-1, 3)
+    if triangles.size:
+        # Drop duplicate triangles.  The contour crosses the internal faces of
+        # the six-tetrahedron split from both sides, so both tetrahedra emit the
+        # same triangle on such a face -- identical vertex set, identical order.
+        # Keeping one copy is exact (a triangle is determined by its three
+        # vertices), and it removes about a quarter of the triangles, which is
+        # payload and GPU time the phone does not have to spend.
+        key = np.sort(triangles, axis=1)
+        _unique_keys, first_seen = np.unique(key, axis=0, return_index=True)
+        triangles = triangles[np.sort(first_seen)]
+
+        p0 = vertices[triangles[:, 0]]
+        p1 = vertices[triangles[:, 1]]
+        p2 = vertices[triangles[:, 2]]
+        geometric = np.cross(p1 - p0, p2 - p0)
+        reference = vertex_normals[triangles].sum(axis=1)
+        opposes = np.einsum("ij,ij->i", geometric, reference) < 0
+        triangles[opposes] = triangles[opposes][:, [0, 2, 1]]
+        inverse = triangles.ravel()
+
     return {
         "vertices": [[round(float(c), 5) for c in vertex] for vertex in vertices],
         "normals": [[round(float(c), 4) for c in normal] for normal in vertex_normals],

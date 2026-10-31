@@ -84,37 +84,37 @@ struct OrbitalViewRecord {
 /// What was drawn for a density-view entry.
 struct DensityViewRecord {
 
-    /// The absolute levels, in electrons per cubic Bohr, the shells were drawn
-    /// at.  Empty means the engine's own ladder.
-    var levels: [Double]
-    /// The mean-field reference the cloud was built on.
+    /// The absolute contour, in electrons per cubic Bohr, the surface was drawn
+    /// at.  Zero means the engine's own default.
+    var level: Double
+    /// The mean-field reference the surface was built on.
     var method: String
 
     private enum Key {
-        static let levels = "levels"
+        static let level = "level"
         static let method = "method"
         static let kind = "viewKind"
     }
 
-    init(levels: [Double], method: String) {
-        self.levels = levels
+    init(level: Double, method: String) {
+        self.level = level
         self.method = method
     }
 
     init(surface: DensitySurface, method: String) {
-        self.init(levels: surface.levels, method: method)
+        self.init(level: surface.level, method: method)
     }
 
     init?(json: JSONObject) {
         guard json.value(Key.kind) as String? == "density" else { return nil }
-        levels = json.doubles(Key.levels)
+        level = json.number(Key.level) ?? 0
         method = json.value(Key.method) as String? ?? "RHF"
     }
 
     func encoded() -> JSONObject {
         JSONObject([
             Key.kind: "density",
-            Key.levels: levels,
+            Key.level: level,
             Key.method: method,
         ])
     }

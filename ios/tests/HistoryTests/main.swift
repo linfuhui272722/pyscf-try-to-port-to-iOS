@@ -428,10 +428,10 @@ do {
     expect(abs((orbitalBack?.isovalue ?? 0) - 0.05) < 1e-12, "the isovalue round trips")
     expect(orbitalBack?.method == "RHF", "the reference round trips")
 
-    let density = DensityViewRecord(levels: [0.002, 0.05, 1.0], method: "RKS")
+    let density = DensityViewRecord(level: 0.002, method: "RKS")
     let densityBack = DensityViewRecord(json: density.encoded())
     expect(densityBack != nil, "a density recipe decodes")
-    expect(densityBack?.levels == [0.002, 0.05, 1.0], "the levels round trip")
+    expect(abs((densityBack?.level ?? 0) - 0.002) < 1e-12, "the contour round trips")
     expect(densityBack?.method == "RKS", "the density reference round trips")
 
     // The kind is told from the payload's own marker, not from the entry, so a
@@ -490,6 +490,75 @@ do {
     expect(text.contains("MO 5"), "the export names the orbital")
     expect(text.contains("RHF"), "the export names the reference")
     expect(!text.contains("Not recorded"), "the export is not an empty section")
+}
+
+print("history groups by molecule")
+do {
+    // The whole point of the grouping is that an orbital view and a density view
+    // of the same molecule end up together.  The failure is silent: the entries
+    // still list, just in the wrong groups.
+    func entry(_ id: String, _ seconds: Double, kind: HistoryKind,
+               atoms: String, charge: Int = 0, spin: Int = 0) -> HistoryEntry {
+        HistoryEntry(
+            id: id, date: Date(timeIntervalSince1970: seconds),
+            kind: kind, method: "RHF", basis: "sto-3g", atoms: atoms,
+            charge: charge, spin: spin,
+            energy: -75, converged: true, wallTimeMs: 5,
+            summary: "s", payload: JSONObject(["viewKind": "density"]))
+    }
+
+    let water = "O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587"
+    // The same molecule written with different separators and spacing must land
+    // in one group: the key is the parsed atoms, not the raw text.
+    let waterRewritten = "O,0,0,0\nH,0,-0.757,0.587\nH,0,0.757,0.587"
+    let ammonia = "N 0 0 0; H 0 0 1.01; H 0 0.95 -0.33; H 0 -0.95 -0.33"
+
+    let entries = [
+        entry("a", 100, kind: .orbitals, atoms: water),
+        entry("b", 200, kind: .scf, atoms: ammonia),
+        entry("c", 300, kind: .density, atoms: water),
+        entry("d", 400, kind: .density, atoms: waterRewritten),
+    ]
+
+    let groups = HistoryGrouping.groups(entries)
+    expect(groups.count == 2, "two molecules yield two groups (\(groups.count))")
+
+    // The group holding the water entries must hold all three, including the
+    // one written with commas and newlines.
+    let waterGroup = groups.first { $0.entries.contains { $0.id == "a" } }
+    expect(waterGroup?.entries.count == 3,
+           "the water group holds all three water entries (\(waterGroup?.entries.count ?? -1))")
+    expect(waterGroup?.entries.map(\.id).sorted() == ["a", "c", "d"],
+           "the orbital and both density entries are together")
+    expect(waterGroup?.title == "H2O", "the group is titled by formula (\(waterGroup?.title ?? "nil"))")
+
+    // The most recently used molecule comes first, so the group order follows
+    // the same newest-first rule the flat list used.
+    expect(groups.first?.entries.contains { $0.id == "d" } == true,
+           "the most recently used molecule is first")
+
+    // Entries keep the incoming (newest-first) order inside a group.
+    expect(waterGroup?.entries.map(\.id) == ["d", "c", "a"],
+           "entries stay newest-first inside the group")
+
+    // Charge and spin are part of the identity: the same atoms at a different
+    // charge are a different species and must not be merged.
+    let cation = entry("e", 500, kind: .scf, atoms: water, charge: 1)
+    let anion = entry("f", 600, kind: .scf, atoms: water, spin: 1)
+    expect(HistoryGrouping.key(for: cation) != HistoryGrouping.key(for: entries[0]),
+           "a different charge is a different group")
+    expect(HistoryGrouping.key(for: anion) != HistoryGrouping.key(for: entries[0]),
+           "a different spin is a different group")
+
+    // An unparseable spec must still be grouped, on its raw text, rather than
+    // dropped or merged into an unrelated group by an empty key.
+    let broken = entry("g", 700, kind: .scf, atoms: "not a molecule at all")
+    let brokenGroups = HistoryGrouping.groups([broken])
+    expect(brokenGroups.count == 1 && brokenGroups[0].entries.count == 1,
+           "an unparseable spec still forms its own group")
+
+    // Grouping is a pure function of the list, so the empty case is empty.
+    expect(HistoryGrouping.groups([]).isEmpty, "an empty history has no groups")
 }
 
 print("")

@@ -77,31 +77,57 @@ struct HistoryView: View {
 
     private var list: some View {
         List {
-            ForEach(model.history) { entry in
-                Button {
-                    activeSheet = .detail(entry)
-                } label: {
-                    HistoryRow(entry: entry)
-                }
-                .buttonStyle(.plain)
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) {
-                        model.deleteHistory(entry)
-                    } label: {
-                        Label(L("common.delete"), systemImage: "trash")
+            // Grouped by molecule rather than by time: an orbital view and a
+            // density view of the same molecule are the same subject, and a flat
+            // newest-first list scattered them among unrelated runs.
+            ForEach(model.historyGroups) { group in
+                Section {
+                    ForEach(group.entries) { entry in
+                        row(entry)
                     }
-                }
-                .swipeActions(edge: .leading) {
-                    Button {
-                        share(entry)
-                    } label: {
-                        Label(L("history.export.one"), systemImage: "square.and.arrow.up")
-                    }
-                    .tint(.blue)
+                } header: {
+                    groupHeader(group)
                 }
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    /// One entry's row, with its delete and export actions.
+    private func row(_ entry: HistoryEntry) -> some View {
+        Button {
+            activeSheet = .detail(entry)
+        } label: {
+            HistoryRow(entry: entry)
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                model.deleteHistory(entry)
+            } label: {
+                Label(L("common.delete"), systemImage: "trash")
+            }
+        }
+        .swipeActions(edge: .leading) {
+            Button {
+                share(entry)
+            } label: {
+                Label(L("history.export.one"), systemImage: "square.and.arrow.up")
+            }
+            .tint(.blue)
+        }
+    }
+
+    /// A molecule's heading: its formula, and how many entries it holds.
+    private func groupHeader(_ group: HistoryGroup) -> some View {
+        HStack(spacing: 6) {
+            Text(group.title)
+                .font(.subheadline.weight(.semibold))
+            Spacer(minLength: 8)
+            Text(LF("history.group.count", group.entries.count))
+                .font(.caption2)
+        }
+        .textCase(nil)
     }
 
     private var emptyState: some View {
@@ -380,9 +406,11 @@ struct HistoryViewerView: View {
         if let cloud = cloud {
             MetricRow(label: L("density.method"), value: cloud.method)
             MetricRow(label: L("density.levels"),
-                      value: cloud.levels.map { String(format: "%.3f", $0) }.joined(separator: ", "))
+                      value: String(format: "%.4f e/bohr³", cloud.level))
             MetricRow(label: L("density.surface"),
                       value: LF("density.surfaceDetail", cloud.triangleCount))
+            MetricRow(label: L("density.legend"),
+                      value: cloud.atoms.map { $0.element }.joined(separator: ", "))
         }
     }
 

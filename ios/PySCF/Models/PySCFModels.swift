@@ -1065,33 +1065,33 @@ struct OrbitalSurface {
     var hasGeometry: Bool { !positive.isEmpty || !negative.isEmpty }
 }
 
-/// One shell of the electron density: the surface where the density equals one
-/// absolute level.
+/// One atom's share of the density surface, for the colour legend.
 ///
-/// Unlike an orbital there is no sign to separate, so a shell is a single mesh
-/// rather than a pair of phases.  ``level`` is in electrons per cubic Bohr and
-/// ``fraction`` is that level over the field's peak, carried so the UI can label
-/// the shell without the peak.
-struct DensityShell {
-    var level: Double
-    var fraction: Double
-    var mesh: OrbitalPhase
+/// ``color`` comes from the engine's CPK palette, so the surface and the
+/// ball-and-stick atoms it wraps agree about which colour means which element.
+struct DensityAtom: Identifiable, Hashable {
+    var index: Int
+    var element: String
+    /// Hex string such as ``#ff0d0d``.
+    var colorHex: String
 
-    var isEmpty: Bool { mesh.isEmpty }
-    var triangleCount: Int { mesh.triangleCount }
+    var id: Int { index }
 
     init(_ json: JSONObject) {
-        level = json.number("level") ?? 0
-        fraction = json.number("fraction") ?? 0
-        mesh = OrbitalPhase(json)
+        index = json.integer("index") ?? 0
+        element = json.value("element") as String? ?? "?"
+        colorHex = json.value("color") as String? ?? "#808080"
     }
 }
 
-/// The total electron density as nested isosurfaces, for the 3D viewer.
+/// The total electron density as one surface, coloured by which atom's
+/// electrons dominate the density at each point.
 ///
-/// The shells are ordered by ascending level, so the first is the diffuse cloud
-/// around the molecule and the last is the densest region at the nuclei.  That
-/// order is what ``DensityPalette`` maps onto its ramp.
+/// The picture is a single closed surface wrapping the molecule, not a set of
+/// nested shells.  Every vertex carries the atom it belongs to and that atom's
+/// share of the local density, so the renderer colours the surface without
+/// knowing anything about the chemistry, and two atoms sharing a region can be
+/// blended rather than split.
 struct DensitySurface {
     var method: String
     var energy: Double
@@ -1100,18 +1100,26 @@ struct DensitySurface {
     var nBasis: Int
     /// The largest density on the sampled box, in electrons per cubic Bohr.
     var peak: Double
-    /// The absolute levels the shells were drawn at, ascending.
-    var levels: [Double]
+    /// The absolute contour the surface was drawn at, in electrons per cubic
+    /// Bohr.
+    var level: Double
     /// The resolution asked for, and the one actually used once the box grew.
     var pointsPerAxis: Int
     var gridPointsPerAxis: Int
     /// The coarsest of the three axis steps, in ångström.
     var gridStep: Double
     var gridOrigin: [Double]
-    /// True when the sampling box was too small to contain the outermost shell,
-    /// so that shell is cut off by the box rather than closed by the field.
+    /// True when the sampling box was too small to contain the surface, so it
+    /// is cut off by the box rather than closed by the field.
     var clipped: Bool
-    var shells: [DensityShell]
+    /// The atoms the surface can be coloured by, in engine order.
+    var atoms: [DensityAtom]
+    /// The mesh, in absolute ångström.
+    var mesh: OrbitalPhase
+    /// One entry per vertex: the index into ``atoms`` that dominates there, and
+    /// that atom's share of the local density (0 to 1).
+    var atomIndex: [Int]
+    var atomShare: [Double]
 
     init(_ json: JSONObject) {
         method = json.value("method") ?? ""
@@ -1120,24 +1128,50 @@ struct DensitySurface {
         nElectrons = json.integer("nElectrons") ?? 0
         nBasis = json.integer("nBasis") ?? 0
         peak = json.number("peak") ?? 0
-        levels = json.doubles("levels")
+        level = json.number("level") ?? 0
         pointsPerAxis = json.integer("pointsPerAxis") ?? 0
         gridPointsPerAxis = json.integer("gridPointsPerAxis") ?? 0
         gridStep = json.number("gridStep") ?? 0
         gridOrigin = json.doubles("gridOrigin")
         clipped = json.value("clipped") as Bool? ?? false
-        shells = json.objects("shells").map(DensityShell.init)
+        atoms = json.objects("atoms").map(DensityAtom.init)
+        mesh = OrbitalPhase(json)
+        atomIndex = json.integers("atomIndex")
+        atomShare = json.doubles("atomShare")
     }
 
-    /// Whether any shell produced geometry.
-    var hasGeometry: Bool { shells.contains { !$0.isEmpty } }
+    var triangleCount: Int { mesh.triangleCount }
+    var hasGeometry: Bool { !mesh.isEmpty }
 
-    /// Total triangles across the shells, for the panel's detail line.
-    var triangleCount: Int { shells.reduce(0) { $0 + $1.triangleCount } }
+    /// The atom dominating vertex ``index``, or nil when the attribution does
+    /// not cover it.
+    ///
+    /// Guarded rather than indexed directly: the two arrays come from the same
+    /// payload as the mesh, and a truncated one must degrade to the default
+    /// colour instead of reading out of bounds.
+    func atom(at vertex: Int) -> DensityAtom? {
+        guard vertex >= 0, vertex < atomIndex.count else { return nil }
+        let index = atomIndex[vertex]
+        guard index >= 0, index < atoms.count else { return nil }
+        return atoms[index]
+    }
 
-    /// The ramp position of one shell, 0 for the densest and 1 for the diffuse.
-    func palettePosition(of shell: DensityShell) -> Double {
-        DensityPalette.position(of: shell.level, among: levels)
+    /// That atom's share of the density at vertex ``index``, 0 when unknown.
+    func share(at vertex: Int) -> Double {
+        guard vertex >= 0, vertex < atomShare.count else { return 0 }
+        return atomShare[vertex]
+    }
+
+    /// How many vertices each atom dominates, for the legend.
+    ///
+    /// Counted from the attribution rather than stored, so the legend cannot
+    /// disagree with the colours on the surface.
+    var vertexCounts: [Int: Int] {
+        var counts: [Int: Int] = [:]
+        for index in atomIndex where index >= 0 && index < atoms.count {
+            counts[index, default: 0] += 1
+        }
+        return counts
     }
 }
 

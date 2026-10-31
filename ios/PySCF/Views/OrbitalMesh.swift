@@ -90,41 +90,78 @@ struct OrbitalMeshPair {
     var isEmpty: Bool { positive == nil && negative == nil }
 }
 
-/// One density shell as a mesh, with the ramp position that colours it.
+/// The density surface as a SceneKit-ready mesh with a colour per vertex.
 ///
-/// The shell meshes are centred on the same point the molecule is, exactly as
-/// the orbital lobes are, so the cloud sits around the atoms rather than beside
-/// them.
-struct DensityShellMesh {
-    /// The ramp position, 0 for the densest shell and 1 for the diffuse one.
-    let palettePosition: Double
-    let level: Double
-    let mesh: OrbitalMesh
-}
-
-/// Every shell of one density surface, ready to add to the molecule scene.
-struct DensityMeshSet {
-    let shells: [DensityShellMesh]
-    /// How far the outermost shell reaches from the origin, so the camera can
-    /// frame the cloud as well as the atoms.
+/// The colours are built here rather than in the renderer so the host test can
+/// check them: the mapping from an atom attribution to a colour is arithmetic,
+/// and a wrong one still renders a perfectly plausible picture in the wrong
+/// colours, which nothing on the device would report.
+///
+/// ``vertexData`` is the same interleaved layout ``OrbitalMesh`` uses -- xyz
+/// then the normal, six floats per vertex -- and ``colourData`` is a parallel
+/// run of RGB triples, three floats per vertex, which is the layout
+/// ``SCNGeometrySource`` wants for a ``.color`` semantic.
+struct DensityMesh {
+    let vertexData: [Float]
+    let colourData: [Float]
+    let vertexCount: Int
+    let indices: [Int32]
+    let triangleCount: Int
     let boundingRadius: Double
 
-    init(surface: DensitySurface, centreOfMass: [Double]) {
-        var built: [DensityShellMesh] = []
-        var radius = 0.0
-        for shell in surface.shells {
-            guard let mesh = OrbitalMesh(phase: shell.mesh, centredOn: centreOfMass) else {
-                continue
-            }
-            built.append(DensityShellMesh(
-                palettePosition: surface.palettePosition(of: shell),
-                level: shell.level,
-                mesh: mesh))
-            radius = max(radius, mesh.boundingRadius)
-        }
-        shells = built
-        boundingRadius = radius
-    }
+    init?(surface: DensitySurface, centredOn centre: [Double]) {
+        let phase = surface.mesh
+        guard !phase.vertices.isEmpty, !phase.indices.isEmpty else { return nil }
+        let shift = SIMD3<Float>(
+            Float(centre.count == 3 ? centre[0] : 0),
+            Float(centre.count == 3 ? centre[1] : 0),
+            Float(centre.count == 3 ? centre[2] : 0)
+        )
+        let hasNormals = phase.normals.count == phase.vertices.count
 
-    var isEmpty: Bool { shells.isEmpty }
+        var data = [Float]()
+        var colours = [Float]()
+        data.reserveCapacity(phase.vertices.count * 6)
+        colours.reserveCapacity(phase.vertices.count * 3)
+        var radiusSquared: Float = 0
+        for (index, vertex) in phase.vertices.enumerated() {
+            let position = vertex - shift
+            radiusSquared = max(radiusSquared, position.x * position.x
+                                + position.y * position.y + position.z * position.z)
+            let normal = hasNormals ? phase.normals[index] : SIMD3<Float>(0, 1, 0)
+            data.append(position.x)
+            data.append(position.y)
+            data.append(position.z)
+            data.append(normal.x)
+            data.append(normal.y)
+            data.append(normal.z)
+
+            // An unattributed vertex takes the palette's fallback colour, so a
+            // payload whose attribution is short by a few entries still draws
+            // the whole surface rather than dropping the tail.
+            let base = surface.atom(at: index).map { DensityPalette.parse($0.colorHex) }
+                ?? DensityPalette.fallback
+            let mixed = DensityPalette.colour(forAtom: base, share: surface.share(at: index))
+            colours.append(Float(mixed.red))
+            colours.append(Float(mixed.green))
+            colours.append(Float(mixed.blue))
+        }
+
+        // Same guard as ``OrbitalMesh``: a truncated payload renders the
+        // triangles it did carry rather than reading past the vertex array.
+        let limit = Int32(phase.vertices.count)
+        var safe = [Int32]()
+        safe.reserveCapacity(phase.indices.count)
+        for index in phase.indices where index >= 0 && index < limit {
+            safe.append(index)
+        }
+        guard safe.count >= 3 else { return nil }
+
+        vertexData = data
+        colourData = colours
+        vertexCount = phase.vertices.count
+        indices = safe
+        triangleCount = safe.count / 3
+        boundingRadius = Double(radiusSquared.squareRoot())
+    }
 }

@@ -29,9 +29,9 @@ struct MoleculeView: UIViewRepresentable {
     /// How opaque the envelope is drawn.  Applied to the existing material, so
     /// changing it never rebuilds the mesh.
     var orbitalOpacity: Double = MoleculeLayout.defaultOrbitalOpacity
-    /// The electron-density cloud to overlay, or ``nil``.  Drawn as nested
-    /// shells in the density ramp, around the same molecule and in the same
-    /// frame as the orbital would be.
+    /// The electron-density cloud to overlay, or ``nil``.  Drawn as one closed
+    /// surface coloured by atom, around the same molecule and in the same frame
+    /// as the orbital would be.
     var density: DensitySurface? = nil
     /// Whether the density cloud is drawn.
     var showsDensity: Bool = true
@@ -231,17 +231,17 @@ struct MoleculeView: UIViewRepresentable {
             }
         }
 
-        /// Builds the density shells, or hides them when there is no cloud.
+        /// Builds the density surface, or hides it when there is no cloud.
         ///
-        /// Rebuilt only when the cloud changes, for the same reason the orbital
-        /// is: the surface arrives as a fresh object on every load, so the
-        /// signature is what stops a re-render on each SwiftUI update from
-        /// discarding the meshes.
+        /// Rebuilt only when the surface changes, for the same reason the
+        /// orbital is: the surface arrives as a fresh object on every load, so
+        /// the signature is what stops a re-render on each SwiftUI update from
+        /// discarding the mesh.
         ///
-        /// The shells are added outermost first so the renderer, which blends
-        /// them back to front, draws the diffuse cloud before the dense cores.
-        /// Each shell is given its own ramp colour from ``DensityPalette``, which
-        /// is what turns the nesting into a readable density gradient.
+        /// The mesh is drawn as a single closed surface with a colour per
+        /// vertex, so there is no nesting and no render-order problem: the
+        /// shell version drew nine translucent surfaces at one render order,
+        /// and an outer one hid the inner ones from most angles.
         private func updateDensity(_ surface: DensitySurface?, centreOfMass: [Double]) {
             guard let surface = surface else {
                 densityNode.isHidden = true
@@ -252,27 +252,20 @@ struct MoleculeView: UIViewRepresentable {
             }
             densityNode.isHidden = false
 
-            let current = "\(surface.method)|\(surface.peak)|\(surface.pointsPerAxis)|"
-                + "\(surface.levels.map { String(format: "%.6f", $0) }.joined(separator: ","))|"
-                + "\(surface.triangleCount)"
+            let current = "\(surface.method)|\(surface.level)|\(surface.pointsPerAxis)|"
+                + "\(surface.triangleCount)|\(surface.atoms.count)"
             if densitySignature != current {
                 densitySignature = current
                 densityNode.childNodes.forEach { $0.removeFromParentNode() }
-                let meshes = DensityMeshSet(surface: surface, centreOfMass: centreOfMass)
-                // Descending by ramp position: the diffuse blue cloud first,
-                // then the denser shells over it.
-                for shell in meshes.shells.sorted(by: { $0.palettePosition > $1.palettePosition }) {
-                    let colour = DensityPalette.colour(at: shell.palettePosition)
-                    densityNode.addChildNode(Self.makeSurfaceNode(
-                        shell.mesh,
-                        colour: UIColor(red: CGFloat(colour.red),
-                                        green: CGFloat(colour.green),
-                                        blue: CGFloat(colour.blue),
-                                        alpha: 1),
+                if let mesh = DensityMesh(surface: surface, centredOn: centreOfMass) {
+                    densityNode.addChildNode(Self.makeColouredNode(
+                        mesh,
                         opacity: MoleculeLayout.defaultDensityOpacity,
                         renderingOrder: 5))
+                    densityRadius = mesh.boundingRadius
+                } else {
+                    densityRadius = 0
                 }
-                densityRadius = meshes.boundingRadius
             }
         }
 
@@ -291,12 +284,20 @@ struct MoleculeView: UIViewRepresentable {
                 opacity: MoleculeLayout.defaultOrbitalOpacity, renderingOrder: 10)
         }
 
-        /// A translucent isosurface mesh as a SceneKit node.
+        /// A single-sided isosurface mesh as a SceneKit node.
         ///
-        /// Shared by the orbital lobes and the density shells: both are
-        /// double-sided translucent envelopes over the same molecule, and the
-        /// only differences are the colour, the opening opacity and the render
+        /// Shared by the orbital lobes and the density surface: both are
+        /// translucent envelopes over the same molecule, and the only
+        /// differences are the colour, the opening opacity and the render
         /// order that decides which blends over which.
+        ///
+        /// ``isDoubleSided`` is deliberately **false**.  It used to be true,
+        /// which was right while the triangle winding was arbitrary: a
+        /// double-sided surface shades and blends from either face, so the far
+        /// wall of an envelope blended over the near wall and the surface read
+        /// as a haze of mixed colours rather than as a shell.  The engine now
+        /// orients every triangle outward, so culling back faces is correct and
+        /// each surface contributes exactly one layer of colour.
         private static func makeSurfaceNode(
             _ mesh: OrbitalMesh, colour: UIColor, opacity: Double, renderingOrder: Int
         ) -> SCNNode {
@@ -328,8 +329,6 @@ struct MoleculeView: UIViewRepresentable {
             )
             let geometry = SCNGeometry(sources: [source, normalSource], elements: [element])
 
-            // ``isDoubleSided`` matters because the viewer orbits the molecule
-            // and the far side of a surface would otherwise vanish.
             let material = SCNMaterial()
             material.diffuse.contents = colour
             material.emission.contents = colour.withAlphaComponent(0.25)
@@ -337,11 +336,80 @@ struct MoleculeView: UIViewRepresentable {
             material.lightingModel = .physicallyBased
             material.roughness.contents = 0.6
             material.metalness.contents = 0.0
-            material.isDoubleSided = true
+            material.isDoubleSided = false
             // Writing depth but not testing it against itself would make two
             // overlapping surfaces fight where they meet; leaving the test on
             // and the writes off lets them blend.
             material.writesToDepthBuffer = false
+            material.blendMode = .alpha
+            geometry.materials = [material]
+
+            let node = SCNNode(geometry: geometry)
+            node.renderingOrder = renderingOrder
+            return node
+        }
+
+        /// The density surface as a node with a colour per vertex.
+        ///
+        /// Same geometry as ``makeSurfaceNode``, with a third source carrying
+        /// the per-vertex colours, so the surface shows which atom each region
+        /// belongs to.  The material's own ``diffuse`` is left white: with a
+        /// ``.color`` source present the vertex colour is multiplied by it, and
+        /// anything but white would tint every element the same way.
+        ///
+        /// ``isDoubleSided`` is false here too, and the depth write is on: this
+        /// is a closed surface drawn opaquely enough that the far wall should
+        /// be hidden behind the near one, which is what makes the near wall's
+        /// colour the one that reads.
+        private static func makeColouredNode(
+            _ mesh: DensityMesh, opacity: Double, renderingOrder: Int
+        ) -> SCNNode {
+            let vertexSource = SCNGeometrySource(
+                data: Data(bytes: mesh.vertexData, count: mesh.vertexData.count * MemoryLayout<Float>.size),
+                semantic: .vertex,
+                vectorCount: mesh.vertexCount,
+                usesFloatComponents: true,
+                componentsPerVector: 3,
+                bytesPerComponent: MemoryLayout<Float>.size,
+                dataOffset: 0,
+                dataStride: MemoryLayout<Float>.size * 6
+            )
+            let normalSource = SCNGeometrySource(
+                data: Data(bytes: mesh.vertexData, count: mesh.vertexData.count * MemoryLayout<Float>.size),
+                semantic: .normal,
+                vectorCount: mesh.vertexCount,
+                usesFloatComponents: true,
+                componentsPerVector: 3,
+                bytesPerComponent: MemoryLayout<Float>.size,
+                dataOffset: MemoryLayout<Float>.size * 3,
+                dataStride: MemoryLayout<Float>.size * 6
+            )
+            let colourSource = SCNGeometrySource(
+                data: Data(bytes: mesh.colourData, count: mesh.colourData.count * MemoryLayout<Float>.size),
+                semantic: .color,
+                vectorCount: mesh.vertexCount,
+                usesFloatComponents: true,
+                componentsPerVector: 3,
+                bytesPerComponent: MemoryLayout<Float>.size,
+                dataOffset: 0,
+                dataStride: MemoryLayout<Float>.size * 3
+            )
+            let element = SCNGeometryElement(
+                data: Data(bytes: mesh.indices, count: mesh.indices.count * MemoryLayout<Int32>.size),
+                primitiveType: .triangles,
+                primitiveCount: mesh.triangleCount,
+                bytesPerIndex: MemoryLayout<Int32>.size
+            )
+            let geometry = SCNGeometry(
+                sources: [vertexSource, normalSource, colourSource], elements: [element])
+
+            let material = SCNMaterial()
+            material.diffuse.contents = UIColor.white
+            material.lightingModel = .physicallyBased
+            material.roughness.contents = 0.55
+            material.metalness.contents = 0.0
+            material.transparency = CGFloat(opacity)
+            material.isDoubleSided = false
             material.blendMode = .alpha
             geometry.materials = [material]
 

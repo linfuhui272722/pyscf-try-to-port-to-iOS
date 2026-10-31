@@ -44,13 +44,14 @@ struct MoleculeLayout {
     static let minimumOrbitalOpacity = 0.05
     static let maximumOrbitalOpacity = 1.0
     static let defaultOrbitalOpacity = 0.55
-    /// The same range for the density cloud.  It opens more transparent than an
-    /// orbital because the cloud is several nested shells, and their
-    /// transparencies compound: at the orbital default the molecule inside would
-    /// be lost behind them.
-    static let minimumDensityOpacity = 0.02
-    static let maximumDensityOpacity = 0.8
-    static let defaultDensityOpacity = 0.22
+    /// The same range for the density surface.  It opens opaque enough that the
+    /// atom colours read: there is now one surface rather than several nested
+    /// shells, so the transparencies no longer compound, and the colour is the
+    /// information the picture carries.  A floor above zero keeps the surface
+    /// visible as a shape while the atoms inside stay readable.
+    static let minimumDensityOpacity = 0.10
+    static let maximumDensityOpacity = 1.0
+    static let defaultDensityOpacity = 0.55
     /// One radius for every bond, in ångström, so bonds do not thicken just
     /// because a molecule is larger.
     static let bondRadius = 0.075

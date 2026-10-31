@@ -223,7 +223,7 @@ struct PySCFEngine {
         xc: String = "b3lyp",
         charge: Int = 0,
         spin: Int = 0,
-        levels: [Double] = [],
+        level: Double = 0,
         pointsPerAxis: Int = 40
     ) async throws -> DensitySurface {
         try await run {
@@ -236,7 +236,7 @@ struct PySCFEngine {
                 "spin": spin,
                 "pointsPerAxis": pointsPerAxis,
             ]
-            if !levels.isEmpty { params["levels"] = levels }
+            if level > 0 { params["level"] = level }
             return DensitySurface(try call("density_surface", params))
         }
     }

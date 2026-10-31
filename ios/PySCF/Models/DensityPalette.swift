@@ -1,116 +1,79 @@
 // DensityPalette.swift
 //
-// The colour ramp the 3D density picture uses, and the mapping from a shell's
-// density to a position on it.
+// The colours the density surface is drawn in, and the mapping from a vertex's
+// atom attribution to a colour.
 //
 // Foundation only, and no reference to SwiftUI or SceneKit: the host test
-// compiles this file against the plain Linux Swift toolchain to check the ramp
-// and the mapping, and neither framework exists there.  A wrong ramp is not
-// visible in the model layer -- it renders as a perfectly valid picture in the
-// wrong colours -- which is why the mapping is pinned by test rather than
-// eyeballed on a device.
+// compiles this file against the plain Linux Swift toolchain to check the
+// mapping, and neither framework exists there.  A wrong colour is not visible
+// in the model layer -- it renders as a perfectly valid picture in the wrong
+// colours -- which is why the mapping is pinned by test rather than eyeballed
+// on a device.
 //
-// The ramp runs red -> orange -> yellow -> green -> blue, high density first,
-// with every neighbouring pair of stops interpolated so there is no banding
-// between them.
+// The surface is coloured by *atom*, not by density: each vertex takes the
+// colour of the atom whose electrons dominate the density there.  That is the
+// picture that answers "whose electrons are these", which is what a chemist
+// reads a density plot for.  Colouring by density value instead would say only
+// "high here, low there", which the shape of the surface already shows.
 
 import Foundation
 
-/// The red-to-blue ramp the density shells are drawn in.
-///
-/// The stops are the familiar rainbow, high density at the red end.  They are
-/// stored as RGB triples rather than platform colours so the arithmetic is
-/// identical on the build host and on the device.
+/// Maps an atom attribution onto a colour for the density surface.
 enum DensityPalette {
 
-    /// One stop of the ramp: a position from 0 to 1, and its colour.
-    struct Stop: Equatable {
-        let position: Double
+    /// An RGB triple, so the arithmetic is identical on the build host and on
+    /// the device.
+    struct Colour: Equatable {
         let red: Double
         let green: Double
         let blue: Double
-
-        init(_ position: Double, _ red: Double, _ green: Double, _ blue: Double) {
-            self.position = position
-            self.red = red
-            self.green = green
-            self.blue = blue
-        }
     }
 
-    /// The ramp, ascending in position.
+    /// The colour used when a vertex's atom is unknown.
     ///
-    /// Chosen so the five named colours are evenly spaced and the steps between
-    /// them are perceptually similar: red at the densest core, then orange,
-    /// yellow and green through the bonding region, and blue for the diffuse
-    /// cloud that reaches furthest out.
-    static let stops: [Stop] = [
-        Stop(0.00, 0.55, 0.05, 0.06),  // deep red
-        Stop(0.25, 0.93, 0.35, 0.05),  // orange
-        Stop(0.50, 0.97, 0.82, 0.12),  // yellow
-        Stop(0.75, 0.20, 0.72, 0.28),  // green
-        Stop(1.00, 0.12, 0.34, 0.85),  // blue
-    ]
+    /// A neutral grey, chosen so it reads as "no attribution" rather than as one
+    /// of the element colours: a payload missing its attribution must look
+    /// unattributed, not look like it belongs to some element.
+    static let fallback = Colour(red: 0.55, green: 0.55, blue: 0.58)
 
-    /// The ramp's colour at ``position``, clamped to its ends.
+    /// Parses a ``#rrggbb`` string from the engine's CPK palette.
     ///
-    /// Interpolates between the two bracketing stops, so every value between
-    /// them is drawn and the ramp has no visible banding.
-    static func colour(at position: Double) -> (red: Double, green: Double, blue: Double) {
-        let value = position.isFinite ? min(max(position, 0), 1) : 0
-        for index in 1..<stops.count where value <= stops[index].position {
-            let low = stops[index - 1]
-            let high = stops[index]
-            let span = high.position - low.position
-            let t = span > 0 ? (value - low.position) / span : 0
-            return (
-                red: low.red + (high.red - low.red) * t,
-                green: low.green + (high.green - low.green) * t,
-                blue: low.blue + (high.blue - low.blue) * t
-            )
+    /// Anything unparseable yields the fallback rather than black, so a bad
+    /// hex string degrades to the "unattributed" colour instead of to a colour
+    /// that looks deliberate.
+    static func parse(_ hex: String) -> Colour {
+        let text = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard text.count == 6, let value = UInt32(text, radix: 16) else {
+            return fallback
         }
-        let last = stops[stops.count - 1]
-        return (red: last.red, green: last.green, blue: last.blue)
+        return Colour(
+            red: Double((value >> 16) & 0xFF) / 255.0,
+            green: Double((value >> 8) & 0xFF) / 255.0,
+            blue: Double(value & 0xFF) / 255.0
+        )
     }
 
-    /// Where a shell's density sits on the ramp, 0 at the densest and 1 at the
-    /// diffuse end.
+    /// The colour a vertex is drawn in.
     ///
-    /// The shells are drawn at absolute density levels, and those levels span
-    /// orders of magnitude -- 0.002 to 1.0 e/bohr^3 -- so the position is taken
-    /// from the logarithm of the level, not the level itself.  A linear mapping
-    /// would put eight of the nine shells in the last few percent of the ramp
-    /// and draw them all the same colour, which is exactly the information the
-    /// picture is meant to carry.
+    /// ``share`` is the dominant atom's fraction of the local density.  A
+    /// vertex sitting squarely on one atom has a share near 1 and takes that
+    /// atom's colour; one on a bond has a lower share, and is mixed toward a
+    /// neutral tone so the seam between two atoms reads as a blend rather than
+    /// as a hard border belonging to one of them.
     ///
-    /// ``levels`` is the full set of levels the picture was built from, which is
-    /// what makes the ramp cover the whole set: the densest level gets red and
-    /// the most diffuse gets blue, whatever absolute values were chosen.
-    static func position(of level: Double, among levels: [Double]) -> Double {
-        guard level > 0, !levels.isEmpty else { return 0 }
-        let sorted = levels.filter { $0 > 0 }.sorted()
-        guard let lowest = sorted.first, let highest = sorted.last, highest > lowest else {
-            return 0
-        }
-        let logLevel = log(level)
-        let logLow = log(lowest)
-        let logHigh = log(highest)
-        let span = logHigh - logLow
-        guard span > 0 else { return 0 }
-        // Highest density is at position 0, so the ramp is entered from its
-        // red end as the level rises.
-        return min(max((logHigh - logLevel) / span, 0), 1)
-    }
-
-    /// The ramp position for a shell described only by its density and the peak
-    /// of the field, when no explicit level list is available.
-    ///
-    /// Falls back to bracketing the level between the density at the nucleus and
-    /// a negligible floor, which keeps a lone shell on the ramp rather than
-    /// collapsing it to one end.
-    static func position(of level: Double, peak: Double) -> Double {
-        guard level > 0, peak > 0 else { return 0 }
-        let floor = peak * 1e-5
-        return position(of: level, among: [floor, peak])
+    /// The mix is deliberately shallow: the atom's own colour always dominates,
+    /// because the point of the picture is which atom a region belongs to, and
+    /// a heavy mix would wash every atom toward the same grey.
+    static func colour(forAtom colour: Colour, share: Double) -> Colour {
+        let weight = share.isFinite ? min(max(share, 0), 1) : 1
+        // At share 1 the atom's colour is untouched; below it the colour moves
+        // toward the neutral tone by at most this fraction.
+        let maximumMix = 0.35
+        let mix = (1.0 - weight) * maximumMix
+        return Colour(
+            red: colour.red + (fallback.red - colour.red) * mix,
+            green: colour.green + (fallback.green - colour.green) * mix,
+            blue: colour.blue + (fallback.blue - colour.blue) * mix
+        )
     }
 }
