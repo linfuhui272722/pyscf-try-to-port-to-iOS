@@ -73,6 +73,8 @@ def capabilities() -> dict:
             "bond_scan",
             "nbo",
             "wiberg",
+            "e2",
+            "perturbation",
             "lpo",
             "clpo",
             "pm",

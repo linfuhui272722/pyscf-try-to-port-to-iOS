@@ -22,7 +22,7 @@ import time
 import traceback
 from typing import Any, Iterable
 
-from . import core_orbitals, geometry, localized_orbitals, natural_orbitals, orbital_localization, orbital_surface
+from . import core_orbitals, e2 as e2_module, geometry, localized_orbitals, natural_orbitals, orbital_localization, orbital_surface, periodic
 from .diaglog import crash_probe, get_logger
 
 # --------------------------------------------------------------------------
@@ -36,11 +36,21 @@ try:
     import numpy as np
     import pyscf
     from pyscf import cc, dft, gto, mp, scf
+
+    # The periodic module tree.  Imported alongside the molecular one because a
+    # request may ask for either, and a build that has one without the other
+    # should fail here rather than midway through a cell calculation.
+    from pyscf.pbc import dft as pbc_dft
+    from pyscf.pbc import gto as pbc_gto
+    from pyscf.pbc import scf as pbc_scf
 except Exception as exc:
     _PYSCF_ERROR = f"{type(exc).__name__}: {exc}"
     _PYSCF_TRACEBACK = traceback.format_exc()
     np = None  # type: ignore[assignment]
     pyscf = None  # type: ignore[assignment]
+    pbc_gto = None  # type: ignore[assignment]
+    pbc_scf = None  # type: ignore[assignment]
+    pbc_dft = None  # type: ignore[assignment]
 
 
 class EngineUnavailable(RuntimeError):
@@ -388,6 +398,56 @@ def _coerce_atoms(spec: Any) -> list[dict]:
             raise ValueError("empty atom list")
         return atoms
     raise TypeError("atoms must be an XYZ string or a list of atoms")
+
+
+def _build_cell(atoms: list[dict], basis: str, charge: int, spin: int, params: dict):
+    """Build a periodic cell, or return ``None`` when the request is molecular.
+
+    A cell differs from a molecule in three ways, and each has to be right or the
+    number that comes out is not the number that was asked for:
+
+    * it carries the lattice vectors, in Bohr;
+    * it carries a *periodicity* — three for a crystal, two for a slab, one for a
+      wire — which is not inferable from the lattice alone, since a slab and a
+      crystal can share a matrix;
+    * it carries a pseudopotential, without which PySCF refuses the basis.  Only
+      hydrogen and helium can be described by the bare nuclear potential in a
+      periodic cell; everything heavier has a cusp that the lattice sums cannot
+      represent.
+
+    The basis also has to be a periodic one.  PySCF's ``gth-szv`` and friends are
+    Gaussian basis sets designed for cells, and asking for ``6-31g`` in a cell
+    is a different (and much more expensive) calculation, so the periodic default
+    is stated here rather than inherited from the molecular default.
+    """
+    lattice = periodic.lattice_from_params(params)
+    if lattice is None:
+        return None
+    dimension = periodic.cell_dimensions(params)
+    pseudo = periodic.pseudopotential_for(atoms, params.get("pseudo"))
+
+    atom_block = [(a["element"], tuple(float(v) for v in a["xyz"])) for a in atoms]
+    _check_electrons(atoms, charge, spin)
+    cell = pbc_gto.Cell()
+    cell.atom = atom_block
+    cell.a = lattice
+    cell.basis = basis
+    if pseudo:
+        cell.pseudo = pseudo
+    cell.dimension = int(dimension)
+    cell.charge = int(charge)
+    cell.spin = int(spin)
+    cell.unit = str(params.get("unit", "Angstrom"))
+    cell.verbose = 0
+    cell.output = None
+    # The number of images summed over decides the accuracy of every lattice
+    # integral.  PySCF's automatic figure is tuned for a crystal with a real
+    # basis; with a vacuum gap, as in a slab, the cell is long and the default
+    # over-sums.  ``precision`` is exposed so a caller can trade cost for it.
+    if params.get("precision") is not None:
+        cell.precision = float(params["precision"])
+    cell.build()
+    return cell
 
 
 def _build_mol(atoms: list[dict], basis: str, charge: int, spin: int, unit: str = "Angstrom"):
@@ -766,6 +826,56 @@ def _wants_density_fit(mol, params: dict) -> bool:
     return False
 
 
+def _make_cell_method(cell, method: str, xc: str, params: dict, kpts):
+    """The periodic counterpart of ``_make_method``.
+
+    ``kpts`` decides which solvers are used.  A Γ-only sampling can run on the
+    ordinary solvers, which are faster and better tested; anything denser needs
+    the k-point ones, which are named with a ``K`` prefix.  The choice is made
+    here rather than by the caller so that the two cannot disagree.
+    """
+    method = method.upper()
+    if method not in ("RHF", "UHF", "ROHF", "RKS", "UKS"):
+        raise ValueError(f"unsupported periodic SCF method: {method}")
+    needs_kpoints = kpts is not None and len(kpts) > 1
+
+    if needs_kpoints:
+        table = {
+            "RHF": pbc_scf.KRHF,
+            "UHF": pbc_scf.KUHF,
+            "ROHF": pbc_scf.KROHF,
+            "RKS": pbc_dft.KRKS,
+            "UKS": pbc_dft.KUKS,
+        }
+        builder = table.get(method)
+        if builder is None:
+            raise ValueError(f"unsupported periodic SCF method: {method}")
+        mf = builder(cell, kpts=kpts)
+    else:
+        table = {
+            "RHF": pbc_scf.RHF,
+            "UHF": pbc_scf.UHF,
+            "ROHF": pbc_scf.ROHF,
+            "RKS": pbc_dft.RKS,
+            "UKS": pbc_dft.UKS,
+        }
+        builder = table.get(method)
+        if builder is None:
+            raise ValueError(f"unsupported periodic SCF method: {method}")
+        mf = builder(cell)
+
+    if method.endswith("KS"):
+        mf.xc = xc or "b3lyp"
+    if params.get("maxCycle"):
+        mf.max_cycle = int(params["maxCycle"])
+    if params.get("convTol"):
+        mf.conv_tol = float(params["convTol"])
+    level = params.get("gridLevel")
+    if level is not None and hasattr(mf, "grids"):
+        mf.grids.level = int(level)
+    return mf
+
+
 def _make_method(mol, method: str, xc: str, params: dict):
     method = method.upper()
     if method == "RHF":
@@ -804,7 +914,8 @@ def _make_method(mol, method: str, xc: str, params: dict):
     return mf
 
 
-def _finalise(mf, atoms, method, basis, wall_ms, log, include, localization=None) -> dict:
+def _finalise(mf, atoms, method, basis, wall_ms, log, include, localization=None,
+              params: dict | None = None) -> dict:
     result: dict[str, Any] = {
         "ok": True,
         "method": f"{method}/{basis}",
@@ -814,20 +925,82 @@ def _finalise(mf, atoms, method, basis, wall_ms, log, include, localization=None
         "wallTimeMs": round(wall_ms, 3),
         "log": log[-4000:],
     }
-    result.update(_electronic_structure(mf, atoms, include, localization))
+    result.update(_electronic_structure(mf, atoms, include, localization, params))
     return result
 
 
-def _electronic_structure(mf, atoms, include, localization: str | None = None) -> dict:
+def _is_periodic(mf) -> bool:
+    """Whether a converged mean field came from a periodic cell.
+
+    A cell carries a ``dimension``; a molecule does not.  That is the reliable
+    marker, because the k-point attributes differ between the Γ-only and
+    k-sampled solvers while the cell is the same object either way.
+    """
+    return getattr(getattr(mf, "mol", None), "dimension", None) is not None
+
+
+def _flatten_kpoint_arrays(values) -> np.ndarray:
+    """Flatten a per-k-point quantity into one array.
+
+    A k-sampled solver reports one array per k-point — ``mo_energy`` is a list of
+    them — while a Γ-only one reports a single array.  The payload wants one
+    flat list, so the k-point blocks are concatenated.  The order is k-point
+    major, which is the order the solver used.
+    """
+    if values is None:
+        return np.zeros(0)
+    if isinstance(values, (list, tuple)):
+        blocks = [np.asarray(v, dtype=float).ravel() for v in values]
+        return np.concatenate(blocks) if blocks else np.zeros(0)
+    array = np.asarray(values, dtype=float)
+    if array.dtype == object:
+        blocks = [np.asarray(v, dtype=float).ravel() for v in array.ravel()]
+        return np.concatenate(blocks) if blocks else np.zeros(0)
+    return array.ravel()
+
+
+def _cell_payload(mf, params: dict | None = None) -> dict | None:
+    """The cell echoed back in ångström, for a periodic calculation."""
+    cell = getattr(mf, "mol", None)
+    if not _is_periodic(mf):
+        return None
+    summary = periodic.lattice_summary(
+        np.asarray(cell.a, dtype=float), int(cell.dimension))
+    if summary is not None:
+        kpts = getattr(mf, "kpts", None)
+        # ``mf.kpts`` is the list of sampled k-points, not the mesh that was
+        # asked for, so the count is reported under its own name.  Calling it the
+        # mesh would read as "sampling 2x2x2" for what is really 2 points.
+        summary["nKpts"] = int(np.asarray(kpts).shape[0]) if kpts is not None else 1
+        if params is not None:
+            summary["kmesh"] = periodic.kmesh_from_params(params)
+            # A slab built from a request that never stated its periodicity is a
+            # different calculation from the crystal it would otherwise default
+            # to, and the two look identical in the payload without this.
+            summary["dimensionStated"] = periodic.dimension_was_stated(params)
+    return summary
+
+
+def _electronic_structure(mf, atoms, include, localization: str | None = None,
+                          params: dict | None = None) -> dict:
     """Orbital, population and density payloads for one converged calculation.
 
     ``include`` is the set of extra payloads to compute.  ``localization`` is
     kept out of it because the requested value carries the method name, which a
     set cannot hold; ``None`` means the caller did not ask for localisation at
     all.
+
+    A periodic calculation reports the cell and the orbital data, and leaves out
+    the molecular analyses.  Those analyses are built on the NAO transformation,
+    which is defined for an atom-centred basis with a molecular overlap matrix;
+    a cell's overlap is k-point dependent, and there is no single matrix to feed
+    them.  Reporting them as absent is honest; computing them from the Γ-point
+    overlap alone would give a number that looks like the molecular one and is
+    not the periodic one.
     """
-    mo_energy = np.asarray(mf.mo_energy, dtype=float).ravel()
-    mo_occ = np.asarray(mf.mo_occ, dtype=float).ravel()
+    periodic_run = _is_periodic(mf)
+    mo_energy = _flatten_kpoint_arrays(mf.mo_energy)
+    mo_occ = _flatten_kpoint_arrays(mf.mo_occ)
     homo, lumo = _homo_lumo(mo_energy, mo_occ)
 
     result: dict[str, Any] = {
@@ -835,16 +1008,29 @@ def _electronic_structure(mf, atoms, include, localization: str | None = None) -
         "nBasis": int(mf.mol.nao_nr()),
         "nAlpha": int(mf.mol.nelec[0]),
         "nBeta": int(mf.mol.nelec[1]),
-        # The viewer's localised-orbital buttons are one per occupied orbital,
-        # which is half the electron count only for a closed shell.  Sent
-        # explicitly so an open-shell run does not under-count.
-        "nLocalizedOrbitals": int(orbital_localization.localizable_orbital_count(mf)),
+        "periodic": bool(periodic_run),
         "homo": round(float(homo), 8) if homo is not None else None,
         "lumo": round(float(lumo), 8) if lumo is not None else None,
         "gap": round(float(lumo - homo), 8) if homo is not None and lumo is not None else None,
         "orbitalEnergies": [round(float(e), 8) for e in mo_energy],
         "occupations": [round(float(o), 6) for o in mo_occ],
     }
+    if periodic_run:
+        result["cell"] = _cell_payload(mf, params)
+        result["nLocalizedOrbitals"] = None
+        if "_skip_population" not in include:
+            # Stated rather than left as a gap in the payload, so the UI can say
+            # why the population panels are empty for a cell.
+            result["populationUnavailable"] = (
+                "population, bond-order and natural-orbital analyses are defined "
+                "for a molecular basis; they are not computed for a periodic cell"
+            )
+        return result
+
+    # The viewer's localised-orbital buttons are one per occupied orbital, which
+    # is half the electron count only for a closed shell.  Sent explicitly so an
+    # open-shell run does not under-count.
+    result["nLocalizedOrbitals"] = int(orbital_localization.localizable_orbital_count(mf))
     if "_skip_population" not in include:
         # The bond scan only reads the energy, so it asks for these to be left
         # out rather than paying for three O(N^2) analyses per geometry.
@@ -893,15 +1079,32 @@ def _run_mean_field(params: dict, dm0=None):
     ``dm0`` seeds the SCF with a density matrix from a previous geometry.  The
     atom-centred basis does not change when the nuclei move, so the matrix stays
     dimensionally valid and a relaxation can walk the surface reusing it.
+
+    A request that carries lattice vectors is built as a periodic cell instead of
+    a molecule, and converges through the periodic solvers.  Because every
+    calculation in the engine reaches its mean field through here, that one
+    branch is what makes the cell inputs available to all of them — SCF, DFT, the
+    analyses and the geometry optimiser alike.
     """
     _require_pyscf()
     atoms = _coerce_atoms(params["atoms"])
-    basis = str(params.get("basis", "sto-3g"))
     method = str(params.get("method", "RHF")).upper()
     xc = str(params.get("xc", "b3lyp"))
 
-    mol = _build_mol(atoms, basis, int(params.get("charge", 0)), int(params.get("spin", 0)),
-                     params.get("unit", "Angstrom"))
+    cell_basis = _cell_basis(params)
+    cell = _build_cell(atoms, cell_basis, int(params.get("charge", 0)),
+                       int(params.get("spin", 0)), params)
+    periodic_run = cell is not None
+    if periodic_run:
+        kpts = cell.make_kpts(periodic.kmesh_from_params(params))
+        basis = cell_basis
+        mol = cell
+    else:
+        basis = cell_basis
+        kpts = None
+        mol = _build_mol(atoms, basis, int(params.get("charge", 0)),
+                         int(params.get("spin", 0)), params.get("unit", "Angstrom"))
+
     buf = io.StringIO()
     # The SCF is the longest single call in the app and the one most likely to
     # be running when the process dies, so it is bracketed in the log.  Written
@@ -909,11 +1112,15 @@ def _run_mean_field(params: dict, dm0=None):
     logger = get_logger()
     logger.write(
         f"scf: starting {method}/{basis} xc={xc} natm={len(atoms)} "
+        f"periodic={periodic_run} kmesh={periodic.kmesh_from_params(params) if periodic_run else None} "
         f"grid={params.get('gridLevel')} dm0={'yes' if dm0 is not None else 'no'}; {crash_probe()}",
         tag="scf",
     )
     with contextlib.redirect_stdout(buf):
-        mf = _make_method(mol, method, xc, params)
+        if periodic_run:
+            mf = _make_cell_method(cell, method, xc, params, kpts)
+        else:
+            mf = _make_method(mol, method, xc, params)
         mf.kernel(dm0=dm0)
     logger.write(
         f"scf: finished E={mf.e_tot:.10f} cycles={getattr(mf, 'cycles', '?')} "
@@ -921,6 +1128,23 @@ def _run_mean_field(params: dict, dm0=None):
         tag="scf",
     )
     return mf, atoms, basis, method, buf.getvalue()
+
+
+def _cell_basis(params: dict) -> str:
+    """The basis to use for a periodic build.
+
+    A periodic cell needs a periodic basis.  ``gth-szv`` is the smallest of the
+    ones PySCF ships for cells and is the default here, because the alternative —
+    silently reusing a molecular basis like ``sto-3g`` — gives a calculation that
+    runs but whose lattice sums are not what the user asked for.  A caller that
+    names a basis gets exactly that basis.
+    """
+    requested = params.get("basis")
+    if requested:
+        return str(requested)
+    if periodic.lattice_from_params(params) is not None:
+        return str(params.get("cellBasis", "gth-szv"))
+    return "sto-3g"
 
 
 def _requested_localization(params: dict) -> str | None:
@@ -953,7 +1177,7 @@ def run_scf(params: dict, full: bool = True) -> dict:
     mf, atoms, basis, method, log = _run_mean_field(params)
     wall_ms = (time.perf_counter() - start) * 1000.0
     return _finalise(mf, atoms, method, basis, wall_ms, log, include,
-                     _requested_localization(params))
+                     _requested_localization(params), params)
 
 
 def _post_hf(params: dict, kind: str) -> dict:
@@ -980,7 +1204,7 @@ def _post_hf(params: dict, kind: str) -> dict:
     wall_ms = (time.perf_counter() - start) * 1000.0
     label = f"{kind.upper()}({reference.upper()})"
     result = _finalise(mf, mol_atoms, label, basis, wall_ms, buf.getvalue(), include,
-                       _requested_localization(params))
+                       _requested_localization(params), params)
     result["correlationEnergy"] = round(e_corr, 10)
     result["scfEnergy"] = round(scf_energy, 10)
     return result
@@ -1111,6 +1335,40 @@ def run_geometry_optimisation(params: dict) -> dict:
         tag="optimise",
     )
 
+    # A periodic relaxation needs its gradient taken numerically, because the
+    # analytic lattice gradient omits the nonlocal pseudopotential term and is
+    # wrong by about a factor of two — see ``geomopt._numerical_gradient``.  The
+    # cell is detected from the request rather than from a converged object, so
+    # the decision is made before the first SCF.
+    periodic_run = periodic.lattice_from_params(params) is not None
+    periodic_keys = ("lattice", "cell", "a", "dimension", "kmesh", "kPoints",
+                     "pseudo", "latticeUnit", "precision")
+    for key in periodic_keys:
+        if params.get(key) is not None:
+            base[key] = params[key]
+    if periodic_run:
+        logger.write(
+            f"optimise: periodic cell, dimension={periodic.cell_dimensions(params)}, "
+            f"kmesh={periodic.kmesh_from_params(params)}; gradients will be numerical",
+            tag="optimise",
+        )
+
+    def periodic_energy(flat):
+        """Energy only, for the finite-difference gradient."""
+        coords = np.asarray(flat, dtype=float).reshape(-1, 3)
+        step_atoms = [
+            {"element": a["element"], "z": a["z"], "xyz": [float(v) for v in row]}
+            for a, row in zip(initial, coords)
+        ]
+        step_params = dict(base)
+        step_params["atoms"] = step_atoms
+        step_params["unit"] = "Bohr"
+        if relax_level is not None:
+            step_params["gridLevel"] = relax_level
+        mf, _built, _basis, _method, _log = _run_mean_field(step_params)
+        state["mf"] = mf
+        return float(mf.e_tot)
+
     def energy_and_grad(flat):
         # PySCF takes and returns Bohr; the UI works in Angstrom.
         coords = np.asarray(flat, dtype=float).reshape(-1, 3)
@@ -1136,6 +1394,19 @@ def run_geometry_optimisation(params: dict) -> dict:
             call_log.append("warning: an SCF cycle during the relaxation did not converge")
         state["mf"] = mf
         state["dm"] = mf.make_rdm1()
+        if periodic_run:
+            # Numerical, because the analytic lattice gradient is missing the
+            # nonlocal pseudopotential term.  The energy for the central
+            # difference comes from a fresh SCF at each displaced geometry.
+            logger.write("energy_and_grad: numerical gradient starting", tag="optimise")
+            gradient = geomopt._numerical_gradient(
+                lambda values: periodic_energy(values), np.asarray(flat, dtype=float))
+            logger.write(
+                f"energy_and_grad: numerical gradient done, "
+                f"max|g|={np.max(np.abs(gradient)):.3e}",
+                tag="optimise",
+            )
+            return float(mf.e_tot), gradient
         logger.write("energy_and_grad: gradient starting", tag="optimise")
         gradient = np.asarray(_gradient_method(mf).kernel(), dtype=float).reshape(-1)
         logger.write(
@@ -1165,6 +1436,10 @@ def run_geometry_optimisation(params: dict) -> dict:
         max_steps=max_steps,
         conv_tol_grad=conv_tol_grad,
         conv_tol_energy=conv_tol_energy,
+        # A cell's lattice is held fixed, so only the uniform translations are
+        # zero modes; the rotations carry real force and must be kept.  A
+        # molecule has no lattice and both are removed.
+        projector=geomopt.translation_projector if periodic_run else None,
     )
     wall_ms = (time.perf_counter() - start) * 1000.0
     logger.write(
@@ -1191,7 +1466,15 @@ def run_geometry_optimisation(params: dict) -> dict:
         mf, _b, _ba, _m, refine_log = _run_mean_field(refine_params, dm0=state["dm"])
         if refine_log.strip():
             call_log.append(refine_log.strip())
-        gradient = np.asarray(_gradient_method(mf).kernel(), dtype=float).reshape(-1)
+        if periodic_run:
+            # The same numerical gradient, for the same reason as during the
+            # relaxation: the reported gradient has to be the one the relaxation
+            # actually converged against.
+            refine_base = np.asarray(mf.mol.atom_coords(), dtype=float).reshape(-1)
+            gradient = geomopt._numerical_gradient(
+                lambda values: periodic_energy(values), refine_base)
+        else:
+            gradient = np.asarray(_gradient_method(mf).kernel(), dtype=float).reshape(-1)
         state["mf"] = mf
         refined = (float(mf.e_tot), gradient)
         logger.write(f"optimise: refined, E={mf.e_tot:.10f}", tag="optimise")
@@ -1243,12 +1526,76 @@ def run_geometry_optimisation(params: dict) -> dict:
             for point in outcome["trajectory"]
         ],
         "geometry": geometry.describe(angstrom_atoms),
+        # Which gradient drove the relaxation, so a periodic result is not
+        # mistaken for one converged on an analytic gradient.
+        "gradientMethod": "numerical (central difference)" if periodic_run else "analytic",
+        "periodic": bool(periodic_run),
         "log": "\n".join(call_log)[-4000:],
     }
+    if periodic_run:
+        # Built here, after ``_electronic_structure`` has run, because that call
+        # rebuilds ``cell`` from the mean field and cannot know whether the
+        # lattice was held fixed — only how it looks.  Assigning before it would
+        # silently drop these three fields.
+        cell = periodic.lattice_summary(
+            periodic.lattice_from_params(params), periodic.cell_dimensions(params))
+        cell["kmesh"] = periodic.kmesh_from_params(params)
+        cell["latticeFixed"] = True
+        # Said explicitly, because a slab built from a request that did not state
+        # its periodicity is a different calculation from the crystal it would
+        # otherwise default to, and the two are indistinguishable in the result.
+        cell["dimensionStated"] = periodic.dimension_was_stated(params)
     if mf is not None:
         result.update(_electronic_structure(mf, angstrom_atoms, include,
                                             _requested_localization(params)))
+    if periodic_run:
+        result["cell"] = cell
     return result
+
+
+def run_e2(params: dict) -> dict:
+    """Second-order perturbation energies, E(2), from the Lewis orbitals.
+
+    Standalone, so the analysis can be asked for on its own without re-running
+    the mean field that produced it.  ``kind`` selects the Lewis orbital set:
+    ``"clpo"`` (the default) keeps lone pairs on their own atom, ``"lpo"`` does
+    not.  ``thresholdKcal`` is the smallest interaction that is listed; the
+    total covers every pair regardless.
+    """
+    start = time.perf_counter()
+    # Refused from the request, before the mean field is run.  A periodic SCF
+    # allocates a real-space grid and is orders of magnitude heavier than the
+    # molecular ones; running it only to discard the result costs the caller the
+    # most expensive part of the request and can exhaust a phone's memory.
+    if periodic.is_periodic(params):
+        raise ValueError(
+            "E(2) is defined on the molecular Lewis orbitals of a finite basis; "
+            "it is not computed for a periodic cell"
+        )
+    mf, atoms, basis, method, _log = _run_mean_field(params)
+    wall_ms = (time.perf_counter() - start) * 1000.0
+    if _is_periodic(mf):
+        raise ValueError(
+            "E(2) is defined on the molecular Lewis orbitals of a finite basis; "
+            "it is not computed for a periodic cell"
+        )
+    kind = str(params.get("kind", "clpo")).lower()
+    if kind not in ("clpo", "lpo"):
+        raise ValueError(f"kind must be 'clpo' or 'lpo', not {kind!r}")
+    analysis = e2_module.compute(
+        mf,
+        atoms,
+        kind=kind,
+        threshold_kcal=float(params.get("thresholdKcal", e2_module._DEFAULT_THRESHOLD_KCAL)),
+        max_interactions=int(params.get("maxInteractions", e2_module._DEFAULT_MAX_INTERACTIONS)),
+    )
+    return {
+        "ok": True,
+        "method": f"{method}/{basis}",
+        "energy": round(float(mf.e_tot), 10),
+        "wallTimeMs": round(wall_ms, 3),
+        **analysis,
+    }
 
 
 def analyse_geometry(params: dict) -> dict:
@@ -1913,6 +2260,11 @@ def dispatch(method: str, params: dict) -> dict:
         "geometry": analyse_geometry,
         "nbo": run_natural_population,
         "wiberg": run_wiberg,
+        # E(2) is the name NBO users ask for; "perturbation" is the same
+        # analysis spelled out, so a caller that prefers the long form is not
+        # sent looking for it under the wrong name.
+        "e2": run_e2,
+        "perturbation": run_e2,
         # The method name is the default variant, so "lpo" does not need an
         # explicit kind while "clpo" can still be asked for anything.
         "lpo": lambda params: run_localized_orbitals({**params, "kind": params.get("kind", "lpo")}),

@@ -194,8 +194,10 @@ def localized_orbitals(
     """Localised property-optimised orbitals for a converged wavefunction.
 
     ``kind`` selects the target: ``"clpo"`` for the chemist's orbitals, ``"lpo"``
-    for the plain property-optimised ones.  Returns ``None`` when the analysis
-    cannot run, matching the other analyses.
+    for the plain property-optimised ones.  The name is case-insensitive, so a
+    caller that writes ``"CLPO"`` gets the chemist's orbitals rather than
+    silently falling through to the plain ones.  Returns ``None`` when the
+    analysis cannot run, matching the other analyses.
     """
     try:
         mol = mf.mol
@@ -208,13 +210,18 @@ def localized_orbitals(
     if len(atoms) != mol.natm:
         return None
 
-    return _optimise(mf, layout, basis, basis.sds_nao, kind == "clpo")
+    return _optimise(mf, layout, basis, basis.sds_nao, str(kind).lower() == "clpo")
 
 
-def _optimise(
-    mf, layout: _BasisLayout, basis: _NaoBasis, sds_nao: np.ndarray, lewis_mode: bool
-) -> dict[str, Any]:
-    """Run the LPO/CLPO loop and describe the resulting orbitals."""
+def _solve_hybrids(
+    layout: _BasisLayout, basis: _NaoBasis, sds_nao: np.ndarray, lewis_mode: bool
+):
+    """Run the LPO/CLPO loop and return the solved hybrids.
+
+    Split out of ``_optimise`` so that callers which need the orbitals as
+    *coefficients* — the E(2) analysis does — can reach them without repeating
+    the loop, which is the expensive part of this module.
+    """
     n_atoms = layout.n_atoms
     n_naos = sds_nao.shape[0]
     nao_at_centre = [np.where(layout.atom == centre)[0] for centre in range(n_atoms)]
@@ -241,7 +248,125 @@ def _optimise(
         )
 
     sds_hybrid = _sds_in_hybrid_basis(hybrids, dab, nao_at_centre, n_atoms)
-    return _describe(hybrids, sds_hybrid, global_indices, layout, mf, n_atoms, lewis_mode)
+    return hybrids, sds_hybrid, global_indices, nao_at_centre
+
+
+def _optimise(
+    mf, layout: _BasisLayout, basis: _NaoBasis, sds_nao: np.ndarray, lewis_mode: bool
+) -> dict[str, Any]:
+    """Run the LPO/CLPO loop and describe the resulting orbitals."""
+    hybrids, sds_hybrid, global_indices, _nao_at_centre = _solve_hybrids(
+        layout, basis, sds_nao, lewis_mode
+    )
+    return _describe(
+        hybrids, sds_hybrid, global_indices, layout, mf, layout.n_atoms, lewis_mode
+    )
+
+
+def lewis_orbitals(
+    mf, atoms: list[dict], *, kind: str = "clpo"
+) -> dict[str, Any] | None:
+    """The LPO/CLPO orbitals as coefficient vectors, for further analysis.
+
+    ``localized_orbitals`` reports what each orbital *is*; this returns the
+    orbitals themselves, which is what a perturbative analysis needs in order to
+    evaluate matrix elements between them.  Each column is expressed in the AO
+    basis of ``mf.mol``.
+
+    The set is globally orthonormal, and that is what makes it usable as the
+    donor and acceptor basis of an E(2) analysis.  Each hybrid of each atom
+    belongs to exactly one bond, lone pair or Rydberg orbital, and the hybrids
+    within an atom are orthonormal by construction, so the assembled orbitals
+    are orthonormal across the whole molecule.  A canonical reference cannot be
+    used instead: its occupied and virtual spaces are individually orthonormal
+    too, but Brillouin's theorem makes the Fock coupling between them vanish, so
+    the stabilisation would be reported as nothing.
+
+    ``kind`` is case-insensitive.  Returns ``None`` when the analysis cannot run,
+    matching the other analyses.
+    """
+    try:
+        mol = mf.mol
+        layout = _BasisLayout(mol)
+        overlap, _density, sds = _density_matrices(mf)
+        basis = _build_naos(mol, overlap, sds, layout)
+        if len(atoms) != mol.natm:
+            return None
+        hybrids, sds_hybrid, global_indices, nao_at_centre = _solve_hybrids(
+            layout, basis, basis.sds_nao, str(kind).lower() == "clpo"
+        )
+    except Exception:
+        return None
+
+    n_atoms = layout.n_atoms
+    nao_to_ao = basis.nao_to_ao
+
+    def hybrid_vector(centre: int, hybrid: int) -> np.ndarray:
+        return nao_to_ao[nao_at_centre[centre]].T @ hybrids[centre].u[:, hybrid]
+
+    columns: list[np.ndarray] = []
+    occupancies: list[float] = []
+    kinds: list[str] = []
+    labels: list[str] = []
+    centres: list[list[int]] = []
+    elements: list[list[str]] = []
+
+    for centre in range(n_atoms):
+        element = mol.atom_symbol(centre)
+        for hybrid in range(hybrids[centre].n_valid):
+            index = global_indices[centre][hybrid]
+            friend = int(hybrids[centre].friend_atom[hybrid])
+            if friend == -1:
+                occupancy = float(sds_hybrid[index, index])
+                columns.append(hybrid_vector(centre, hybrid))
+                occupancies.append(occupancy)
+                kinds.append("lonePair" if occupancy > 1.0 else "rydberg")
+                labels.append(f"{element}{centre + 1}")
+                centres.append([centre])
+                elements.append([element])
+                continue
+
+            friend_hybrid = int(hybrids[centre].friend_hybrid[hybrid])
+            partner = int(global_indices[friend][friend_hybrid])
+            if partner <= index:
+                # Counted from the other atom of the pair, so each bond is
+                # emitted once rather than twice.
+                continue
+            block = np.array(
+                [
+                    [sds_hybrid[index, index], sds_hybrid[index, partner]],
+                    [sds_hybrid[index, partner], sds_hybrid[partner, partner]],
+                ]
+            )
+            values, vectors = np.linalg.eigh(block)
+            order = np.argsort(values)[::-1]
+            values = values[order]
+            vectors = vectors[:, order]
+            other_element = mol.atom_symbol(friend)
+            label = f"{element}{centre + 1}-{other_element}{friend + 1}"
+            first = hybrid_vector(centre, hybrid)
+            second = hybrid_vector(friend, friend_hybrid)
+            for column, kind_name in ((0, "bonding"), (1, "antiBonding")):
+                columns.append(
+                    vectors[0, column] * first + vectors[1, column] * second
+                )
+                occupancies.append(float(values[column]))
+                kinds.append(kind_name)
+                labels.append(label)
+                centres.append([centre, friend])
+                elements.append([element, other_element])
+
+    if not columns:
+        return None
+    return {
+        "kind": "CLPO" if kind == "clpo" else "LPO",
+        "coefficients": np.array(columns).T,
+        "occupancies": np.array(occupancies),
+        "types": kinds,
+        "labels": labels,
+        "centres": centres,
+        "elements": elements,
+    }
 
 
 def _initial_guess(hybrids, nao_at_centre, dab, n_atoms) -> None:

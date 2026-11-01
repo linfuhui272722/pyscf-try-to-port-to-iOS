@@ -32,6 +32,8 @@ MODULES = [
     "test_orbital_surface.py",
     "test_density_surface.py",
     "test_core_orbitals.py",
+    "test_e2.py",
+    "test_periodic.py",
 ]
 
 # Imports the module and calls every top-level test_* function, in one process.
