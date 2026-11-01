@@ -563,6 +563,137 @@ do {
     }
 }
 
+print("perturbation energies (E2)")
+do {
+    let e2 = PerturbationResult(fixture("perturbation"))
+    // The orbital set is named, so a payload built on the wrong orbitals cannot
+    // be read as the right one.
+    expect(e2.kind.lowercased() == "clpo", "the orbital set is named (\(e2.kind))")
+    expect(!e2.analysisMethod.isEmpty, "the analysis method is stated")
+    // Counts and rows must agree, or the panel's header contradicts its list.
+    expect(e2.donorCount > 0, "donors present (\(e2.donorCount))")
+    expect(e2.acceptorCount > 0, "acceptors present (\(e2.acceptorCount))")
+    expect(e2.interactions.count == e2.interactionCount,
+           "the count matches the listed rows (\(e2.interactions.count)/\(e2.interactionCount))")
+    // The whole point of the model: the per-pair numbers, not just the total.
+    // A model that read only the top level would pass everything above.
+    expect(e2.interactions.allSatisfy { $0.energyKcal != 0 },
+           "each interaction carries its own energy")
+    expect(e2.interactions.allSatisfy { !$0.donorLabel.isEmpty && !$0.acceptorLabel.isEmpty },
+           "each interaction names both orbitals")
+    expect(e2.interactions.allSatisfy { $0.coupling != 0 },
+           "each interaction carries its Fock coupling")
+    // A stabilisation is negative; a sign flip here is a real chemistry error.
+    expect(e2.interactions.allSatisfy { $0.energyKcal < 0 },
+           "every listed stabilisation is negative")
+    expect(e2.totalStabilizationKcal < 0, "the total is stabilising (\(e2.totalStabilizationKcal))")
+    // The total covers all pairs and the list is thresholded, so the total must
+    // be at least as large in magnitude as the sum of what is listed.
+    let listed = e2.interactions.reduce(0) { $0 + $1.energyKcal }
+    expect(abs(e2.totalStabilizationKcal) >= abs(listed) - 1e-9,
+           "the total covers at least the listed rows")
+    // The total is over every pair; the list is thresholded and capped. The
+    // water fixture has weak pairs below the threshold, so the list must not
+    // claim to account for the total -- and the old `count >= interactionCount`
+    // definition always returned true here, which is exactly the bug.
+    expect(!e2.listIsComplete, "the list is reported as partial")
+    expect(abs(e2.listedStabilizationKcal - listed) < 1e-9,
+           "the listed sum matches the rows (\(e2.listedStabilizationKcal))")
+    expect(abs(e2.listedStabilizationKcal) < abs(e2.totalStabilizationKcal),
+           "the listed rows sum to less than the total")
+    expect(e2.strongest != nil, "the strongest interaction is found")
+    // The orbital list is separate from the interactions and is what the panel
+    // labels donors and acceptors from.
+    expect(!e2.orbitals.isEmpty, "orbitals decoded (\(e2.orbitals.count))")
+    expect(e2.orbitals.contains { $0.isDonor }, "at least one orbital is a donor")
+    expect(e2.orbitals.contains { !$0.isDonor }, "at least one orbital is an acceptor")
+    // The description is the row's label in the UI; an empty one is a blank row.
+    expect(e2.interactions.allSatisfy { !$0.description.isEmpty },
+           "every interaction has a readable description")
+    // Rydberg and lone-pair names must be spaced, not the raw camel case.
+    expect(e2.interactions.contains { $0.description.contains("lone pair") }
+           || e2.interactions.contains { $0.description.contains("Rydberg") },
+           "type names are rendered for display")
+}
+
+print("perturbation energies over the other orbital set")
+do {
+    // CLPO and LPO are different orbital sets, so the numbers differ. If the
+    // two ever agree, the `kind` parameter is not reaching the analysis.
+    let clpo = PerturbationResult(fixture("perturbation"))
+    let lpo = PerturbationResult(fixture("perturbation_lpo"))
+    expect(lpo.kind.lowercased() == "lpo", "the second set is named (\(lpo.kind))")
+    expect(clpo.kind != lpo.kind, "the two sets are distinguishable")
+    expect(lpo.totalStabilizationKcal != clpo.totalStabilizationKcal,
+           "the two sets give different totals (\(lpo.totalStabilizationKcal) vs \(clpo.totalStabilizationKcal))")
+}
+
+print("periodic cells")
+do {
+    let cell = ScfResult(fixture("scf_cell"))
+    expect(cell.periodic, "the run reports itself periodic")
+    expect(cell.cell != nil, "the cell is decoded")
+    if let cell = cell.cell {
+        expect(cell.dimension == 3, "the dimension is 3 (\(cell.dimension))")
+        expect(cell.lattice.count == 3, "three lattice vectors")
+        expect(cell.lattice.allSatisfy { $0.count == 3 }, "each vector has three components")
+        // The cubic test cell: 5.43 Å on each side, so the lengths and the
+        // derived volume are checkable against the input rather than against the
+        // model's own arithmetic.
+        expect(abs(cell.a - 5.43) < 1e-6, "a is 5.43 (\(cell.a))")
+        expect(abs(cell.b - 5.43) < 1e-6, "b is 5.43 (\(cell.b))")
+        expect(abs(cell.c - 5.43) < 1e-6, "c is 5.43 (\(cell.c))")
+        expect(abs(cell.alpha - 90) < 1e-6, "alpha is 90 (\(cell.alpha))")
+        expect(abs(cell.volume - 5.43 * 5.43 * 5.43) < 1e-3,
+               "the volume is the cube of the side (\(cell.volume))")
+        expect(cell.nKpts >= 1, "at least one k-point (\(cell.nKpts))")
+        expect(cell.kmesh.count == 3, "the mesh has one entry per axis")
+        // The request stated dimension 3, so this must come back true rather
+        // than as the model's default.
+        expect(cell.dimensionStated, "the stated dimension is reported as stated")
+        expect(!cell.lengthsAndAngles.isEmpty, "the cell renders as a readable string")
+        expect(!cell.kmeshText.isEmpty, "the mesh renders as a readable string")
+    }
+    // The energy is a real number for a periodic run, not a zero default.
+    expect(cell.energy != 0, "the periodic energy is present (\(cell.energy))")
+    expect(cell.nBasis > 0, "basis functions present for the cell (\(cell.nBasis))")
+}
+
+print("a molecular run carries no cell")
+do {
+    // The same model type decodes both, so the absence has to be an absence
+    // rather than a zeroed cell that the panel would then draw.
+    let water = ScfResult(fixture("scf"))
+    expect(!water.periodic, "a molecule does not report itself periodic")
+    expect(water.cell == nil, "a molecule carries no cell")
+}
+
+print("the mean-field method behind a result")
+do {
+    // The E(2) analysis re-runs the mean field, so it needs the method alone.
+    // The engine reports `METHOD/BASIS`, and passing that whole string back is
+    // rejected as an unsupported method, so the split is load-bearing.
+    let scf = ScfResult(fixture("scf"))
+    expect(scf.method.contains("/"), "the reported method carries the basis (\(scf.method))")
+    expect(scf.referenceMethod(spin: 0) == "RHF", "the basis is stripped (\(scf.referenceMethod(spin: 0)))")
+
+    let dft = ScfResult(fixture("dft"))
+    expect(dft.referenceMethod(spin: 0) == "RKS",
+           "a Kohn-Sham run yields RKS (\(dft.referenceMethod(spin: 0)))")
+    // A spin-polarised run has to move to the unrestricted driver: the
+    // restricted one ignores the spin and would return a closed-shell answer.
+    expect(dft.referenceMethod(spin: 1) == "UKS",
+           "a spin-polarised Kohn-Sham run yields UKS (\(dft.referenceMethod(spin: 1)))")
+    expect(scf.referenceMethod(spin: 1) == "ROHF",
+           "a spin-polarised Hartree-Fock run yields ROHF (\(scf.referenceMethod(spin: 1)))")
+
+    // A post-Hartree-Fock method names its reference in parentheses, and that
+    // inner name is the mean field to repeat, not the outer method.
+    let mp2 = ScfResult(fixture("mp2"))
+    expect(mp2.referenceMethod(spin: 0) == "RHF",
+           "MP2 yields its SCF reference (\(mp2.referenceMethod(spin: 0)) from \(mp2.method))")
+}
+
 print("")
 print(failures == 0 ? "\(checks)/\(checks) checks passed" : "\(failures) of \(checks) checks FAILED")
 exit(failures == 0 ? 0 : 1)

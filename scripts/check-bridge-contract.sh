@@ -55,11 +55,38 @@ PATH="$LDSHIM:$PATH"
 
 mkdir -p "$OUT"
 
+# Prefer the repository's interpreter, then anything on PATH.  The host image is
+# reset between sessions and takes system packages with it, so a bare ``python3``
+# finds no NumPy while the repo's own .venv still has it — which looks like a
+# broken bridge rather than a missing dependency.
+if [ -n "${HOST_PYTHON:-}" ]; then
+  PYTHON="$HOST_PYTHON"
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+  PYTHON="$ROOT/.venv/bin/python"
+else
+  PYTHON="$(command -v python3 || true)"
+fi
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+  echo "no Python interpreter found; run scripts/host-test-env.sh setup or set HOST_PYTHON" >&2
+  exit 1
+fi
+
 echo ">> generating fixtures from the Python bridge"
-PYSCF_ROOT="$ROOT" python3 - "$OUT/fixtures.json" <<'PY'
+# PySCF's own shared libraries link against a BLAS that the host image does not
+# keep, so the repository carries a copy and it has to be on the loader path.
+# Same reason as the interpreter above: without it the import fails and reads as
+# a broken bridge.
+PYSCF_ROOT="$ROOT" LD_LIBRARY_PATH="$ROOT/.venv/lib/blas${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  "$PYTHON" - "$OUT/fixtures.json" <<'PY'
 import json, sys, os
 
-sys.path.insert(0, os.path.join(os.environ["PYSCF_ROOT"], "src"))
+# ``src`` for the package, and the repository root for the in-tree PySCF build.
+# The root is added explicitly rather than relied on as the working directory,
+# because the script is runnable from anywhere and a missing PySCF reads as a
+# broken bridge rather than a path that was never set.
+_ROOT = os.environ["PYSCF_ROOT"]
+sys.path.insert(0, os.path.join(_ROOT, "src"))
+sys.path.insert(0, _ROOT)
 
 from pyscf_mobile import bridge
 
@@ -135,6 +162,22 @@ fixtures = {
                                         "method": "RHF", "basis": "6-31g",
                                         "maxSteps": 30, "densityFit": False}),
     "error": call("scf", {"atoms": "Xx 0 0 0", "basis": "sto-3g"}),
+    # E(2) over the CLPO Lewis orbitals.  The payload is nested twice over: the
+    # interactions carry their own per-pair energies, and the orbitals are a
+    # separate list, so a model that reads only the top level decodes as a set of
+    # zeroes and still renders.  The default SCF payload does not contain these
+    # fields at all, so this needs its own fixture.
+    "perturbation": call("e2", {"atoms": WATER, "basis": "6-31g", "method": "RHF"}),
+    # The plain LPO set, which is a different orbital choice and so a different
+    # set of numbers; the two must not be conflated in the UI.
+    "perturbation_lpo": call("e2", {"atoms": WATER, "basis": "6-31g", "method": "RHF",
+                                    "kind": "lpo"}),
+    # A periodic cell.  The cell summary is the part a molecular payload does not
+    # have, and the analyses that are deliberately absent for a cell are reported
+    # as absent rather than omitted, so the model has to decode both.
+    "scf_cell": call("scf", {"atoms": "Si 0 0 0; Si 0.25 0.25 0.25",
+                             "lattice": [[5.43, 0, 0], [0, 5.43, 0], [0, 0, 5.43]],
+                             "dimension": 3, "method": "RHF", "include": []}),
 }
 
 with open(sys.argv[1], "w") as handle:

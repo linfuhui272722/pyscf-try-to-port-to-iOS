@@ -18,6 +18,7 @@ struct ScfResultPanels: View {
     var body: some View {
         VStack(spacing: 16) {
             headline
+            cellPanel
             orbitalPanel
             chargesPanel
             naturalPanel
@@ -25,6 +26,41 @@ struct ScfResultPanels: View {
             intrinsicLocalizationPanel
             mayerPanel
             dipolePanel
+        }
+    }
+
+    /// The periodic cell, shown only for a periodic run.
+    ///
+    /// Placed above the orbital ladder because it qualifies everything below it:
+    /// a k-point-sampled band structure is not a molecular orbital ladder, and
+    /// the same numbers mean different things.
+    @ViewBuilder
+    private var cellPanel: some View {
+        if result.periodic, let cell = result.cell {
+            Panel(title: L("results.cell"), systemImage: "cube") {
+                MetricRow(label: L("results.cell.dimension"),
+                          value: LF("results.cell.dimensionValue", cell.dimension))
+                MetricRow(label: L("results.cell.lengths"), value: cell.lengthsAndAngles)
+                MetricRow(label: L("results.cell.volume"),
+                          value: String(format: "%.4f Å³", cell.volume))
+                MetricRow(label: L("results.cell.kpoints"),
+                          value: LF("results.cell.kpointsValue", cell.nKpts, cell.kmeshText))
+                if !cell.dimensionStated {
+                    // The dimension drives how many axes are summed over, so an
+                    // inferred one is worth flagging rather than hiding.
+                    Text(L("results.cell.inferred"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let note = result.populationUnavailable {
+                    // A cell reports no Mulliken/NPA because the population
+                    // analyses are defined for a molecule. Saying so avoids the
+                    // panels below reading as zeros.
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -421,6 +457,96 @@ struct OptimisationPanel: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
             Text(value).font(.callout.monospacedDigit())
+        }
+    }
+}
+
+/// The second-order perturbation (E(2)) analysis.
+///
+/// Shown on demand rather than with every run: it is a second mean-field solve
+/// over the localised orbitals, so it costs about as much as the run it analyses.
+struct PerturbationPanel: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Panel(title: L("results.e2"), systemImage: "arrow.triangle.branch") {
+            kindPicker
+            if model.isLoadingPerturbation {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(L("results.e2.running")).font(.callout).foregroundStyle(.secondary)
+                }
+            } else if let e2 = model.perturbation {
+                summary(e2)
+                Divider()
+                interactions(e2)
+            } else {
+                Text(L("results.e2.prompt"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The orbital-set choice. CLPO and LPO give different numbers, so the
+    /// selection is visible and switching refetches rather than relabelling.
+    private var kindPicker: some View {
+        Picker(L("results.e2.orbitals"), selection: Binding(
+            get: { model.perturbationKind },
+            set: { chosen in Task { await model.loadPerturbation(kind: chosen) } }
+        )) {
+            Text(L("results.e2.clpo")).tag("clpo")
+            Text(L("results.e2.lpo")).tag("lpo")
+        }
+        .pickerStyle(.segmented)
+        .disabled(model.isLoadingPerturbation || model.result?.periodic == true)
+    }
+
+    @ViewBuilder
+    private func summary(_ e2: PerturbationResult) -> some View {
+        MetricRow(label: L("results.e2.total"),
+                  value: String(format: "%.4f kcal/mol", e2.totalStabilizationKcal),
+                  emphasised: true)
+        MetricRow(label: L("results.e2.count"),
+                  value: LF("results.e2.countValue", e2.interactionCount, e2.donorCount, e2.acceptorCount))
+        MetricRow(label: L("results.e2.threshold"),
+                  value: String(format: "%.3f kcal/mol", e2.thresholdKcal))
+        // The listed rows are thresholded while the total is not, so the two do
+        // not have to agree. Say so rather than letting the reader add them up.
+        if !e2.listIsComplete {
+            Text(L("results.e2.partial"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        if !e2.analysisMethod.isEmpty {
+            Text(e2.analysisMethod)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func interactions(_ e2: PerturbationResult) -> some View {
+        if e2.interactions.isEmpty {
+            Text(L("results.e2.none")).font(.callout).foregroundStyle(.secondary)
+        } else {
+            // Strongest (most negative) first: the stabilising interactions are
+            // what the analysis is for, and the list is long enough to need an
+            // order the reader would otherwise have to impose.
+            ForEach(e2.interactions.sorted { $0.energyKcal < $1.energyKcal }) { interaction in
+                VStack(alignment: .leading, spacing: 1) {
+                    MetricRow(label: interaction.description,
+                              value: String(format: "%+.3f", interaction.energyKcal),
+                              emphasised: interaction.energyKcal < -1)
+                    Text(String(format: "%+.4f Ha coupling, %.3f Ha gap",
+                                interaction.coupling, interaction.gap))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(L("results.e2.units"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

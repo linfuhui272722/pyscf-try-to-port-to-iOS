@@ -22,6 +22,12 @@ struct ResultsView: View {
                     if let scan = model.scan {
                         BondScanPanel(scan: scan)
                     }
+                    // The E(2) panel is only offered for a molecular run: a
+                    // periodic cell has no localised molecular orbitals to
+                    // analyse, and the engine rejects such a request.
+                    if !result.periodic {
+                        PerturbationPanel()
+                    }
                     logPanel(result.log)
                 } else if model.optimisation == nil {
                     Panel(title: L("results.empty.title"), systemImage: "hourglass") {

@@ -296,6 +296,17 @@ final class AppModel: ObservableObject {
     @Published var scan: BondScanResult?
     @Published var optimisation: OptimisationResult?
 
+    /// The E(2) analysis of the last run, once the user asks for it.
+    ///
+    /// Not fetched with the run itself: it re-runs the SCF on the localised
+    /// orbitals, so it is a second calculation's worth of work and is only worth
+    /// paying for when the panel is opened.
+    @Published var perturbation: PerturbationResult?
+    @Published var isLoadingPerturbation = false
+
+    /// Which Lewis orbital set the E(2) analysis is built on.
+    @Published var perturbationKind: String = "clpo"
+
     @Published var isBusy = false
     @Published var busyLabel = ""
     @Published var errorMessage: String?
@@ -745,6 +756,9 @@ final class AppModel: ObservableObject {
             result = output
             scan = nil
             optimisation = nil
+            // The E(2) analysis belongs to the previous wavefunction, so a new
+            // run clears it rather than leaving stale numbers on screen.
+            perturbation = nil
             // A new run invalidates the orbital the viewer was drawing: the
             // cube belongs to the old wavefunction.
             viewedOrbital = nil
@@ -777,6 +791,52 @@ final class AppModel: ObservableObject {
                 log("warning: SCF did not converge in \(output.cycles) cycles")
             }
         } catch {
+            report(error)
+        }
+    }
+
+    /// Fetches the E(2) perturbation analysis and shows it.
+    ///
+    /// Kept out of ``run`` because it is a whole second mean-field solve on the
+    /// localised orbitals, so it costs about as much as the run that produced the
+    /// orbitals it analyses.  Fetching it for every calculation would roughly
+    /// double the wait for a panel most runs never open.
+    ///
+    /// ``kind`` chooses the orbital set: `"clpo"` keeps lone pairs on their own
+    /// atom, `"lpo"` does not.  The two give different numbers, so switching
+    /// refetches rather than relabelling.
+    func loadPerturbation(kind: String? = nil) async {
+        guard let current = result else { return }
+        let chosen = kind ?? perturbationKind
+        // A periodic run has no localised molecular orbitals to analyse, and the
+        // engine rejects it.  Checked here so the button reports why instead of
+        // surfacing a bridge error.
+        guard !current.periodic else {
+            let message = L("results.e2.periodicUnsupported")
+            errorMessage = message
+            log("error: \(message)")
+            return
+        }
+
+        perturbationKind = chosen
+        isLoadingPerturbation = true
+        defer { isLoadingPerturbation = false }
+        do {
+            perturbation = try await engine.perturbation(
+                atoms: atomSpec,
+                // The result's `method` is `METHOD/BASIS`; E(2) re-runs the mean
+                // field, so it needs the method alone or the engine rejects it.
+                method: current.referenceMethod(spin: spin),
+                basis: basis,
+                xc: functional,
+                charge: charge,
+                spin: spin,
+                kind: chosen)
+            log("E(2) over \(chosen.uppercased()): "
+                + "\(perturbation?.interactionCount ?? 0) interactions, total "
+                + String(format: "%.4f", perturbation?.totalStabilizationKcal ?? 0) + " kcal/mol")
+        } catch {
+            perturbation = nil
             report(error)
         }
     }

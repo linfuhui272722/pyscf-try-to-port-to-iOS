@@ -124,6 +124,12 @@ struct PySCFEngine {
     ///
     /// - Parameters:
     ///   - include: Extra payloads to request, e.g. ``["grid", "mo"]``.
+    ///   - lattice: Three lattice vectors as row vectors, in ``latticeUnit``.
+    ///     Supplying one makes the run periodic; the atoms are then fractional
+    ///     coordinates inside the cell.  `nil` runs a molecule.
+    ///   - dimension: How many of the three axes repeat: 3 for a bulk crystal,
+    ///     2 for a slab, 1 for a wire.  Left unset, the engine infers it.
+    ///   - kmesh: Monkhorst-Pack sampling per periodic axis, e.g. ``[2, 2, 2]``.
     func scf(
         atoms: String,
         method: String = "RHF",
@@ -131,19 +137,55 @@ struct PySCFEngine {
         xc: String = "b3lyp",
         charge: Int = 0,
         spin: Int = 0,
-        include: [String] = []
+        include: [String] = [],
+        lattice: [[Double]]? = nil,
+        latticeUnit: String = "Angstrom",
+        dimension: Int? = nil,
+        kmesh: [Int]? = nil
     ) async throws -> ScfResult {
         try await run {
-            ScfResult(try call("scf", [
-                "atoms": atoms,
-                "method": method,
-                "basis": basis,
-                "xc": xc,
-                "charge": charge,
-                "spin": spin,
-                "include": include,
-            ]))
+            ScfResult(try call("scf", Self.scfParams(
+                atoms: atoms, method: method, basis: basis, xc: xc,
+                charge: charge, spin: spin, include: include,
+                lattice: lattice, latticeUnit: latticeUnit,
+                dimension: dimension, kmesh: kmesh)))
         }
+    }
+
+    /// Builds an SCF/DFT request, adding the cell fields only when a lattice is
+    /// given.
+    ///
+    /// The cell keys are omitted rather than sent as nulls: the engine decides
+    /// "periodic" from the presence of a lattice, and a present-but-empty key
+    /// would be a different request.
+    static func scfParams(
+        atoms: String,
+        method: String,
+        basis: String,
+        xc: String,
+        charge: Int,
+        spin: Int,
+        include: [String],
+        lattice: [[Double]]?,
+        latticeUnit: String,
+        dimension: Int?,
+        kmesh: [Int]?
+    ) -> [String: Any] {
+        var params: [String: Any] = [
+            "atoms": atoms,
+            "method": method,
+            "basis": basis,
+            "xc": xc,
+            "charge": charge,
+            "spin": spin,
+            "include": include,
+        ]
+        guard let latticeVectors = lattice else { return params }
+        params["lattice"] = latticeVectors
+        params["latticeUnit"] = latticeUnit
+        if let dim = dimension { params["dimension"] = dim }
+        if let mesh = kmesh { params["kmesh"] = mesh }
+        return params
     }
 
     /// Runs DFT.
@@ -159,18 +201,21 @@ struct PySCFEngine {
         charge: Int = 0,
         spin: Int = 0,
         method: String? = nil,
-        include: [String] = []
+        include: [String] = [],
+        lattice: [[Double]]? = nil,
+        latticeUnit: String = "Angstrom",
+        dimension: Int? = nil,
+        kmesh: [Int]? = nil
     ) async throws -> ScfResult {
         try await run {
-            ScfResult(try call("dft", [
-                "atoms": atoms,
-                "method": method ?? (spin > 0 ? "UKS" : "RKS"),
-                "xc": functional,
-                "basis": basis,
-                "charge": charge,
-                "spin": spin,
-                "include": include,
-            ]))
+            ScfResult(try call("dft", Self.scfParams(
+                atoms: atoms,
+                method: method ?? (spin > 0 ? "UKS" : "RKS"),
+                basis: basis,
+                xc: functional,
+                charge: charge, spin: spin, include: include,
+                lattice: lattice, latticeUnit: latticeUnit,
+                dimension: dimension, kmesh: kmesh)))
         }
     }
 
@@ -351,6 +396,42 @@ struct PySCFEngine {
                 "steps": steps,
                 "start": start,
                 "stop": stop,
+            ]))
+        }
+    }
+
+    /// Second-order perturbation energies E(2) over the Lewis orbital set.
+    ///
+    /// ``kind`` selects the orbitals the analysis is built on: `"clpo"` for the
+    /// chemist's orbitals, which keep lone pairs on their own atom, or `"lpo"`
+    /// for the plain ones. The two give different numbers, so the choice is a
+    /// parameter rather than a default the caller cannot see.
+    ///
+    /// ``thresholdKcal`` is the smallest stabilisation the returned list holds;
+    /// the reported total covers every pair regardless, so summing the list is
+    /// not the total.
+    func perturbation(
+        atoms: String,
+        method: String = "RHF",
+        basis: String = "sto-3g",
+        xc: String = "b3lyp",
+        charge: Int = 0,
+        spin: Int = 0,
+        kind: String = "clpo",
+        thresholdKcal: Double = 0.05,
+        maxInteractions: Int = 200
+    ) async throws -> PerturbationResult {
+        try await run {
+            PerturbationResult(try call("e2", [
+                "atoms": atoms,
+                "method": method,
+                "basis": basis,
+                "xc": xc,
+                "charge": charge,
+                "spin": spin,
+                "kind": kind,
+                "thresholdKcal": thresholdKcal,
+                "maxInteractions": maxInteractions,
             ]))
         }
     }

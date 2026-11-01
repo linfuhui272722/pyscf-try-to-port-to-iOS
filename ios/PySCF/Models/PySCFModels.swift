@@ -424,10 +424,14 @@ struct MullikenAnalysis {
 ///
 /// The numbers come from a port of JANPA 2.02 (see
 /// `src/pyscf_mobile/natural_orbitals.py`), which reproduces the reference
-/// program's charges and bond orders to the last digit. The second-order
-/// perturbation energies E(2) that the NBO program also produces are not
-/// reported: they need the iterative NBO transformation, which JANPA does not
-/// implement.
+/// program's charges and bond orders to the last digit.
+///
+/// The second-order perturbation energies E(2) that the NBO program also
+/// produces are reported separately, as ``PerturbationResult``, and are *not* a
+/// product of this analysis: they come from the CLPO/LPO Lewis orbitals rather
+/// than from the iterative NBO transformation, which JANPA does not implement.
+/// The two are different orbital sets, so the numbers are not interchangeable
+/// with an NBO program's.
 struct NaturalPopulationAnalysis {
     var perAtom: [NaturalAtom]
     var perElement: [String: Double]
@@ -1214,6 +1218,41 @@ struct ScfResult {
     /// What each orbital in the ladder is built from, when the run carried the
     /// population analysis.  ``nil`` for a payload that skipped it.
     var orbitalCompositions: OrbitalCompositions?
+    /// The periodic cell this run was done in, or `nil` for a molecule.
+    ///
+    /// `periodic` is the engine's own flag and is what the views key off, rather
+    /// than testing `cell != nil`: the two are set together today, but the flag
+    /// is the statement and the cell is the data.
+    var periodic: Bool
+    var cell: CellDescription?
+    /// Set when a population analysis is deliberately not computed for a cell,
+    /// so the panel can say why rather than showing zeroes.
+    var populationUnavailable: String?
+
+    /// The mean-field method that produced this result, without the basis.
+    ///
+    /// The engine reports ``method`` as `METHOD/BASIS` -- `RKS/sto-3g`,
+    /// `MP2(RHF)/sto-3g` -- so the leading token is what a follow-up calculation
+    /// has to be given. The E(2) analysis re-runs the mean field, and handing it
+    /// the whole string is rejected as an unsupported method.
+    ///
+    /// A post-Hartree-Fock method names its reference in parentheses, and that
+    /// inner name is the mean field to repeat. A spin-polarised run of a
+    /// restricted method has to ask for the unrestricted driver, since the
+    /// restricted one ignores the spin.
+    func referenceMethod(spin: Int) -> String {
+        let head = method.split(separator: "/").first.map(String.init) ?? method
+        if let open = head.firstIndex(of: "("),
+           let close = head.firstIndex(of: ")"), open < close {
+            return head[head.index(after: open)..<close].uppercased()
+        }
+        let base = head.uppercased()
+        if spin > 0 {
+            if base == "RKS" { return "UKS" }
+            if base == "RHF" { return "ROHF" }
+        }
+        return base
+    }
 
     /// The engine's response, verbatim.
     ///
@@ -1255,6 +1294,9 @@ struct ScfResult {
             .map { $0.compactMap { ($0 as? NSNumber)?.doubleValue } }
         orbitalCompositions = json.object("orbitalCompositions")
             .map(OrbitalCompositions.init)
+        periodic = json.value("periodic") as Bool? ?? false
+        cell = json.object("cell").map(CellDescription.init)
+        populationUnavailable = json.value("populationUnavailable") as String?
     }
 }
 
@@ -1368,3 +1410,204 @@ struct OptimisationResult {
     }
 }
 
+
+// MARK: - Periodic cells
+
+/// The periodic cell a calculation was run in.
+///
+/// Only the vectors and their derived lengths and angles are shown; the point of
+/// carrying the whole block is that a cell that was *stated* as a dimension is
+/// distinguishable from one that was inferred, which ``dimensionStated`` records.
+struct CellDescription: Hashable {
+    var dimension: Int
+    /// The three lattice vectors, in ångström.
+    var lattice: [[Double]]
+    var a: Double
+    var b: Double
+    var c: Double
+    var alpha: Double
+    var beta: Double
+    var gamma: Double
+    var volume: Double
+    /// The number of k-points the cell was sampled at.
+    var nKpts: Int
+    /// The Monkhorst-Pack mesh, one entry per periodic axis.
+    var kmesh: [Int]
+    /// Whether the request stated the dimension or the engine inferred it.
+    var dimensionStated: Bool
+
+    init(_ json: JSONObject) {
+        dimension = json.integer("dimension") ?? 0
+        lattice = (json.raw["lattice"] as? [[Any]])?
+            .map { $0.compactMap { ($0 as? NSNumber)?.doubleValue } } ?? []
+        a = json.number("a") ?? 0
+        b = json.number("b") ?? 0
+        c = json.number("c") ?? 0
+        alpha = json.number("alpha") ?? 0
+        beta = json.number("beta") ?? 0
+        gamma = json.number("gamma") ?? 0
+        volume = json.number("volume") ?? 0
+        nKpts = json.integer("nKpts") ?? 1
+        kmesh = json.integers("kmesh")
+        dimensionStated = json.value("dimensionStated") as Bool? ?? false
+    }
+
+    /// `5.43 × 5.43 × 5.43 Å, 90°/90°/90°`, the cell as a chemist reads it.
+    var lengthsAndAngles: String {
+        String(format: "%.3f × %.3f × %.3f Å, %.1f°/%.1f°/%.1f°",
+               a, b, c, alpha, beta, gamma)
+    }
+
+    /// The k-point mesh, e.g. `2×2×2`.
+    var kmeshText: String {
+        kmesh.isEmpty ? "—" : kmesh.map(String.init).joined(separator: "×")
+    }
+}
+
+// MARK: - Second-order perturbation energies
+
+/// One donor-acceptor stabilisation from the E(2) analysis.
+///
+/// A negative ``energyKcal`` is stabilising, which is the usual sign for this
+/// analysis: the interaction lowers the energy. The ``coupling`` is the Fock
+/// matrix element between the two Lewis orbitals, so it is what the stabilisation
+/// is actually built from, and it is reported so a suspiciously large energy can
+/// be traced back to it.
+struct PerturbationInteraction: Identifiable, Hashable {
+    var donor: Int
+    var acceptor: Int
+    var donorLabel: String
+    var acceptorLabel: String
+    var donorType: String
+    var acceptorType: String
+    var energyKcal: Double
+    var energyEv: Double
+    var donorEnergy: Double
+    var acceptorEnergy: Double
+    var coupling: Double
+    var gap: Double
+    var gapEv: Double
+
+    var id: String { "\(donor)->\(acceptor)" }
+
+    init(_ json: JSONObject) {
+        donor = json.integer("donor") ?? 0
+        acceptor = json.integer("acceptor") ?? 0
+        donorLabel = json.value("donorLabel") as String? ?? "?"
+        acceptorLabel = json.value("acceptorLabel") as String? ?? "?"
+        donorType = json.value("donorType") as String? ?? ""
+        acceptorType = json.value("acceptorType") as String? ?? ""
+        energyKcal = json.number("energyKcal") ?? 0
+        energyEv = json.number("energyEv") ?? 0
+        donorEnergy = json.number("donorEnergy") ?? 0
+        acceptorEnergy = json.number("acceptorEnergy") ?? 0
+        coupling = json.number("coupling") ?? 0
+        gap = json.number("gap") ?? 0
+        gapEv = json.number("gapEv") ?? 0
+    }
+
+    /// `O1 lone pair → O1-H3 antibond`, the way the interaction reads in the UI.
+    var description: String {
+        "\(donorLabel) \(PerturbationInteraction.readable(donorType)) → "
+            + "\(acceptorLabel) \(PerturbationInteraction.readable(acceptorType))"
+    }
+
+    /// The engine's camel-case type names, spaced for display.
+    static func readable(_ type: String) -> String {
+        switch type {
+        case "lonePair": return "lone pair"
+        case "antiBonding": return "antibond"
+        case "bonding": return "bond"
+        case "rydberg": return "Rydberg"
+        case "": return "orbital"
+        default: return type
+        }
+    }
+}
+
+/// One Lewis orbital of the E(2) analysis, donor or acceptor.
+struct PerturbationOrbital: Identifiable, Hashable {
+    var index: Int
+    var label: String
+    var type: String
+    var occupancy: Double
+    var energy: Double
+
+    var id: Int { index }
+
+    init(_ json: JSONObject) {
+        index = json.integer("index") ?? 0
+        label = json.value("label") as String? ?? "?"
+        type = json.value("type") as String? ?? ""
+        occupancy = json.number("occupancy") ?? 0
+        energy = json.number("energy") ?? 0
+    }
+
+    var isDonor: Bool { occupancy > 0.5 }
+}
+
+/// The E(2) result: every donor-acceptor stabilisation of the Lewis orbital set.
+///
+/// The total is the sum over *all* pairs, while ``interactions`` holds only those
+/// above ``thresholdKcal`` and only up to the request's cap. ``interactionCount``
+/// is the length of that list, not the number of pairs, so it cannot be used to
+/// tell whether the list is complete; ``listIsComplete`` compares the sums.
+struct PerturbationResult {
+    var kind: String
+    var method: String
+    var energy: Double
+    var donorCount: Int
+    var acceptorCount: Int
+    var interactionCount: Int
+    var totalStabilization: Double
+    var totalStabilizationKcal: Double
+    var thresholdKcal: Double
+    var analysisMethod: String
+    var interactions: [PerturbationInteraction]
+    var orbitals: [PerturbationOrbital]
+    var wallTimeMs: Double
+
+    /// The engine's response, verbatim. See ``ScfResult/json``.
+    var json: JSONObject
+
+    init(_ json: JSONObject) {
+        self.json = json
+        kind = json.value("kind") as String? ?? ""
+        method = json.value("method") as String? ?? ""
+        energy = json.number("energy") ?? 0
+        donorCount = json.integer("donorCount") ?? 0
+        acceptorCount = json.integer("acceptorCount") ?? 0
+        interactionCount = json.integer("interactionCount") ?? 0
+        totalStabilization = json.number("totalStabilization") ?? 0
+        totalStabilizationKcal = json.number("totalStabilizationKcal") ?? 0
+        thresholdKcal = json.number("thresholdKcal") ?? 0
+        analysisMethod = json.value("analysisMethod") as String? ?? ""
+        interactions = json.objects("interactions").map(PerturbationInteraction.init)
+        orbitals = json.objects("orbitals").map(PerturbationOrbital.init)
+        wallTimeMs = json.number("wallTimeMs") ?? 0
+    }
+
+    /// The strongest stabilisation listed, or nil when nothing crossed the
+    /// threshold.
+    var strongest: PerturbationInteraction? {
+        interactions.min { $0.energyKcal < $1.energyKcal }
+    }
+
+    /// The sum of the listed rows, in kcal/mol.
+    var listedStabilizationKcal: Double {
+        interactions.reduce(0) { $0 + $1.energyKcal }
+    }
+
+    /// Whether the listed rows account for the whole total.
+    ///
+    /// The total sums *every* donor-acceptor pair; the list holds only those past
+    /// the threshold, and only up to the request's cap. So the two differ
+    /// whenever anything was filtered out, which is the normal case and is what
+    /// the panel warns about. ``interactionCount`` cannot answer this: it is the
+    /// length of the list, not the number of pairs.
+    ///
+    /// Compared with a tolerance because each row is rounded to six decimals.
+    var listIsComplete: Bool {
+        abs(listedStabilizationKcal - totalStabilizationKcal) < 1e-4
+    }
+}
